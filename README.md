@@ -10,6 +10,8 @@ Clients **never connect (associate)** to each other's Wi-Fi networks, never obta
 
 ## How It Works
 
+![WiFiChat Mobile SSID Topology](docs/wifichat-topology.jpg)
+
 Normally, Wi-Fi devices must associate with an access point before exchanging IP packets — leaving MAC, DHCP, and connection logs on the AP. However, every Wi-Fi hotspot continuously broadcasts **IEEE 802.11 Beacon** management frames (~10–20 times per second) containing its **SSID (up to 32 bytes)** so nearby phones and laptops can list nearby Wi-Fi names **before connecting**.
 
 WiFiChat turns this unassociated 802.11 Beacon/Scan channel into an encrypted, erasure-coded air-gap data bus:
