@@ -2,7 +2,6 @@
 
 [![CI](https://github.com/esrrhs/wifichat/actions/workflows/ci.yml/badge.svg)](https://github.com/esrrhs/wifichat/actions/workflows/ci.yml)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/esrrhs/wifichat)](go.mod)
-[![Go Report Card](https://goreportcard.com/badge/github.com/esrrhs/wifichat)](https://goreportcard.com/report/github.com/esrrhs/wifichat)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Android%20%7C%20Windows%20%7C%20macOS-blue)](#usage)
 [![Crypto](https://img.shields.io/badge/crypto-X25519%20%2B%20ChaCha20--Poly1305-008080)](#core-design)
 [![Last Commit](https://img.shields.io/github/last-commit/esrrhs/wifichat)](https://github.com/esrrhs/wifichat/commits/master)
