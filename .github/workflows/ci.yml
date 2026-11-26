@@ -8,7 +8,7 @@ on:
 
 jobs:
   test:
-    name: Build & Test
+    name: Build, Vet & Test
     runs-on: ubuntu-latest
 
     steps:
@@ -21,17 +21,28 @@ jobs:
           go-version: '1.26'
           check-latest: true
 
-      - name: Verify build
+      - name: Static analysis (go vet)
+        run: |
+          go vet ./...
+
+      - name: Build binary
         run: |
           make build
 
-      - name: Run unit & integration tests
+      - name: Run unit & integration tests with race detector and coverage
         run: |
-          go test -v -race -cover ./...
+          go test -v -race -coverprofile=coverage.out ./...
+          go tool cover -func=coverage.out
 
-      - name: Test CLI commands
+      - name: Smoke test CLI & virtual air E2E transfer
         run: |
-          ./bin/tunnelchat help
-          ./bin/tunnelchat -c test_user.json new Alice 123456
-          ./bin/tunnelchat -c test_user.json --no-stun info
-          rm -f test_user.json
+          ./bin/wifichat help
+          ./bin/wifichat drivers
+          ./bin/wifichat --driver sim scan
+          AIR_DIR=$(mktemp -d)
+          ./bin/wifichat recv --driver sim --sim-dir "$AIR_DIR" -k "ci-key" --scan-interval 15ms --once > /tmp/wc_recv.log 2>&1 &
+          RECV_PID=$!
+          sleep 0.2
+          ./bin/wifichat send "ci-ssid-smoke-ok" --driver sim --sim-dir "$AIR_DIR" -k "ci-key" --dwell 20ms
+          wait $RECV_PID
+          grep -q "ci-ssid-smoke-ok" /tmp/wc_recv.log

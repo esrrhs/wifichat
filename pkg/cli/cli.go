@@ -2,356 +2,639 @@ package cli
 
 import (
 	"bufio"
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
-	"tunnelchat/pkg/config"
-	"tunnelchat/pkg/core"
-	"tunnelchat/pkg/relay"
+	"wifichat/pkg/crypto"
+	"wifichat/pkg/engine"
+	"wifichat/pkg/ssid"
+	"wifichat/pkg/wifi"
 )
 
 const (
-	ColorReset  = "\033[0m"
-	ColorRed    = "\033[31m"
-	ColorGreen  = "\033[32m"
-	ColorYellow = "\033[33m"
-	ColorCyan   = "\033[36m"
-	ColorBold   = "\033[1m"
+	colorReset  = "\033[0m"
+	colorRed    = "\033[31m"
+	colorGreen  = "\033[32m"
+	colorYellow = "\033[33m"
+	colorCyan   = "\033[36m"
+	colorBold   = "\033[1m"
 )
 
-type App struct {
-	configPath string
-	opts       core.Options
+type Config struct {
+	Driver       string
+	Iface        string
+	ScanIface    string
+	Channel      int
+	Slots        int
+	Nick         string
+	Key          string
+	Encoding     string
+	Prefix       string
+	Decoy        string
+	Stealth      bool
+	RXOnly       bool
+	Once         bool
+	To           string
+	DownloadDir  string
+	SimDir       string
+	TxCmd        string
+	RxCmd        string
+	Dwell        time.Duration
+	ScanInterval time.Duration
+	Redundancy   float64
+
+	Stdin  io.Reader
+	Stdout io.Writer
+	Stderr io.Writer
 }
 
-func NewApp(configPath string, opts core.Options) *App {
-	return &App{configPath: configPath, opts: opts}
+func (c *Config) out() io.Writer {
+	if c.Stdout != nil {
+		return c.Stdout
+	}
+	return os.Stdout
 }
 
-func PrintUsage() {
-	fmt.Printf(`%sTunnelchat v2%s — authenticated P2P chat (UDP)
+func (c *Config) errOut() io.Writer {
+	if c.Stderr != nil {
+		return c.Stderr
+	}
+	return os.Stderr
+}
+
+func (c *Config) in() io.Reader {
+	if c.Stdin != nil {
+		return c.Stdin
+	}
+	return os.Stdin
+}
+
+func PrintUsage(w io.Writer) {
+	fmt.Fprintf(w, `%sWiFiChat%s — Anonymous nearby text & binary file communication via Wi-Fi SSIDs
+Zero Wi-Fi association, zero IP/UDP/TCP, zero servers, ephemeral RAM-only keys.
 
 %sUsage:%s
-    tunnelchat [flags] <command>
-
-%sFlags:%s
-    -c <path>                 Config file (JSON, default tunnelchat.json)
-    --no-dht                  Disable DHT (no public announce or stranger lookup)
-    --dht-bootstrap host:port Override default Mainline bootstrap (repeatable)
-    --relay-server host:port  Optional encrypted-payload relay
-    --relay-token <token>     Relay access token
-    --no-stun                 Skip STUN (LAN / tests)
+  wifichat [flags] [command]
 
 %sCommands:%s
-    new <name>                Create a new identity (refuses to overwrite)
-    info                      Print a signed invite (no public DHT announce)
-    add <invite>              Pin a friend's identity from their invite
-    online                    STUN, DHT discovery (default on), probes, and chat
-    relay --listen addr --token t
-                              Run an opt-in local relay (default listen 127.0.0.1)
+  chat                    Interactive anonymous nearby chat & file console (default)
+  send <text...>          Broadcast (or --to <peer> E2EE) a chat message and exit
+  sendfile <filepath>     Send a binary file (broadcast or --to <peer> E2EE) and exit
+  recv                    Passive zero-TX listener: receive messages & files silently
+  scan                    Scan nearby Wi-Fi networks once and inspect active signals
+  bench                   Simulate end-to-end throughput across Wi-Fi hardware profiles
+  drivers                 Show detected Wi-Fi hotspot/scanner backends on this host
+  help                    Show this help message
 
-v2 is incompatible with the old DES/MD5 protocol. Existing .xml accounts
-are not modified or migrated. DHT is discovery only; it does not punch NAT
-and is not a chat relay. 'online' announces your public IP on the public
-DHT unless --no-dht is set. Chat payloads stay end-to-end encrypted.
-`, ColorBold, ColorReset, ColorYellow, ColorReset, ColorYellow, ColorReset, ColorYellow, ColorReset)
+%sFlags:%s
+  -n, --nick <alias>          Optional ephemeral alias (default: random anon-xxxx in RAM)
+  -k, --key <passphrase>      Room passphrase (Argon2id); empty = open nearby channel
+  -d, --driver <backend>      auto | hostapd | nmcli | android | macos | windows | cmd | sim
+      --iface <wlan0>         Wi-Fi interface for hotspot SSID broadcast
+      --scan-iface <wlan1>    Optional second Wi-Fi interface for simultaneous fast scan
+      --channel <1..13>       Pinned 2.4GHz channel for ~80ms single-freq scan (default: 6)
+      --slots <1..16>         Parallel SSIDs per beacon sweep (hostapd/cmd/sim; default: 1)
+      --encoding <mode>       ascii91 (26B/SSID universal, default) | raw32 (32B/SSID Linux/sim)
+      --prefix <str>          Camouflage SSID prefix, e.g. "CMCC-" or "TP-"
+      --decoy <ssid>          Decoy SSID shown when idle (default: random router name)
+      --stealth               Quiet idle mode: do not emit periodic Hello beacons
+      --rx-only               Pure passive receive mode: never modify hotspot SSID
+      --once                  In 'recv', exit after receiving the first message or file
+      --to <peer>             Target peer alias or ID prefix for X25519 E2EE 'send'/'sendfile'
+      --download-dir <dir>    Directory to store incoming binary files (default: ./downloads)
+      --dwell <duration>      Override SSID dwell/rotation interval (e.g. 200ms, 600ms)
+      --scan-interval <dur>   Override Wi-Fi scan interval (e.g. 150ms, 400ms)
+      --redundancy <ratio>    Cauchy MDS parity ratio for broadcast transfers (default: 0.55)
+      --sim-dir <dir>         Shared virtual air directory for --driver sim
+      --tx-cmd <cmd>          Custom SSID setter command for --driver cmd ({ssid} / $WIFICHAT_SSID)
+      --rx-cmd <cmd>          Custom Wi-Fi scanner command for --driver cmd (one SSID per line)
+`, colorBold, colorReset, colorYellow, colorReset, colorYellow, colorReset, colorYellow, colorReset)
 }
 
-func (a *App) CmdNew(name string, ignoredPassword string) int {
-	if ignoredPassword != "" {
-		fmt.Printf("%sNote:%s the password argument is ignored; v2 keys are random and are not derived from a password.\n", ColorYellow, ColorReset)
+func CmdDrivers(w io.Writer) int {
+	fmt.Fprintf(w, "%sAvailable Wi-Fi SSID Backends:%s\n", colorBold, colorReset)
+	fmt.Fprintln(w, "--------------------------------------------------------------------------------")
+	for _, st := range wifi.DetectDrivers() {
+		mark := colorRed + "unavailable" + colorReset
+		if st.Available {
+			mark = colorGreen + "ready      " + colorReset
+		}
+		fmt.Fprintf(w, "  %-10s [%s]  %s\n", st.Name, mark, st.Detail)
 	}
-	if sib := config.HasLegacySibling(a.configPath); sib != "" {
-		fmt.Printf("%sNote:%s found leftover v1 config %s (left untouched).\n", ColorYellow, ColorReset, sib)
-	}
-	cfg, err := config.CreateIdentity(a.configPath, name)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%sError:%s %v\n", ColorRed, ColorReset, err)
-		return 1
-	}
-	id, err := cfg.Identity()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%sError:%s %v\n", ColorRed, ColorReset, err)
-		return 1
-	}
-	fmt.Printf("%sUser successfully created!%s\n", ColorGreen, ColorReset)
-	fmt.Printf("  Name: %s\n  Fingerprint: %s\n  Config: %s\n", id.Name, id.Public().Fingerprint(), a.configPath)
-	fmt.Println("This identity is incompatible with tunnelchat v1 clients.")
+	fmt.Fprintln(w, "--------------------------------------------------------------------------------")
 	return 0
 }
 
-func (a *App) withEngine(start bool, fn func(*core.Engine) int) int {
-	cfg, err := config.Load(a.configPath)
+func buildEngine(cfg *Config, extra engine.Options) (*engine.Engine, error) {
+	drv, err := wifi.Open(wifi.DriverConfig{
+		Driver:    cfg.Driver,
+		Iface:     cfg.Iface,
+		ScanIface: cfg.ScanIface,
+		Channel:   cfg.Channel,
+		Slots:     cfg.Slots,
+		RXOnly:    cfg.RXOnly || extra.RXOnly,
+		SimDir:    cfg.SimDir,
+		TxCmd:     cfg.TxCmd,
+		RxCmd:     cfg.RxCmd,
+	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%sError:%s %v\n", ColorRed, ColorReset, err)
+		return nil, err
+	}
+	extra.Driver = drv
+	extra.Nick = cfg.Nick
+	extra.Passphrase = cfg.Key
+	extra.Encoding = ssid.Mode(cfg.Encoding)
+	extra.Prefix = cfg.Prefix
+	extra.DecoySSID = cfg.Decoy
+	extra.Stealth = cfg.Stealth
+	extra.RXOnly = cfg.RXOnly || extra.RXOnly
+	extra.DownloadDir = cfg.DownloadDir
+	extra.Dwell = cfg.Dwell
+	extra.ScanInterval = cfg.ScanInterval
+	extra.BlindRedundancy = cfg.Redundancy
+
+	eng, err := engine.New(extra)
+	if err != nil {
+		_ = drv.Close()
+		return nil, err
+	}
+	return eng, nil
+}
+
+func CmdScan(cfg *Config) int {
+	cfgCopy := *cfg
+	cfgCopy.RXOnly = true
+	drv, err := wifi.Open(wifi.DriverConfig{
+		Driver:    cfgCopy.Driver,
+		Iface:     cfgCopy.Iface,
+		ScanIface: cfgCopy.ScanIface,
+		Channel:   cfgCopy.Channel,
+		Slots:     1,
+		RXOnly:    true,
+		SimDir:    cfgCopy.SimDir,
+		RxCmd:     cfgCopy.RxCmd,
+	})
+	if err != nil {
+		fmt.Fprintf(cfg.errOut(), "scan open driver: %v\n", err)
 		return 1
 	}
-	eng, err := core.New(cfg, a.opts)
+	defer drv.Close()
+
+	mode := ssid.Mode(cfg.Encoding)
+	if mode == "" {
+		mode = ssid.ModeASCII91
+	}
+	codec, err := ssid.NewCodec(mode, cfg.Prefix)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%sError:%s %v\n", ColorRed, ColorReset, err)
+		fmt.Fprintf(cfg.errOut(), "codec: %v\n", err)
 		return 1
 	}
-	if start {
-		if err := eng.Start(); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to initialize network: %v\n", err)
-			return 1
-		}
-		defer eng.Stop()
+	ck := crypto.DeriveChannelKeys(cfg.Key)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	beacons, err := drv.Scan(ctx)
+	if err != nil {
+		fmt.Fprintf(cfg.errOut(), "scan failed: %v\n", err)
+		return 1
 	}
-	return fn(eng)
-}
 
-func (a *App) CmdInfo() int {
-	return a.withEngine(true, func(eng *core.Engine) int {
-		// Gather STUN/host candidates only. Do not announce to a DHT.
-		time.Sleep(200 * time.Millisecond)
-		s, err := eng.Invite()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "%sError:%s %v\n", ColorRed, ColorReset, err)
-			return 1
-		}
-		u := eng.Identity().Public()
-		fmt.Println("--------------------------------------------------------------------------------")
-		fmt.Printf("%sMy Information:%s\n", ColorBold, ColorReset)
-		fmt.Printf("  Name: %s\n  Fingerprint: %s\n", u.Name, u.Fingerprint())
-		if m := eng.Mapped(); m != nil {
-			fmt.Printf("  STUN mapped: %s (shared-socket mapped port)\n", m)
-		}
-		fmt.Printf("  Candidates: %s\n", formatCands(eng))
-		fmt.Printf("\n%sShare this invite with a friend (do not post it on a public DHT or forum):%s\n\n", ColorYellow, ColorReset)
-		fmt.Printf("%s%s%s\n\n", ColorGreen, s, ColorReset)
-		fmt.Println("Both sides must be running 'online' at the same time. Offline delivery is not supported.")
-		fmt.Println("--------------------------------------------------------------------------------")
-		return 0
-	})
-}
-
-func formatCands(eng *core.Engine) string {
-	cs := eng.Candidates()
-	if len(cs) == 0 {
-		return "(none yet)"
-	}
-	var b strings.Builder
-	for i, c := range cs {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		b.WriteString(c.String())
-	}
-	return b.String()
-}
-
-func (a *App) CmdAdd(info string) int {
-	return a.withEngine(false, func(eng *core.Engine) int {
-		if err := eng.AddInvite(info); err != nil {
-			fmt.Printf("%sFailed to add friend: %v%s\n", ColorRed, err, ColorReset)
-			return 1
-		}
-		fmt.Printf("%sFriend added successfully!%s Their identity is now pinned. Run 'online' on both sides to connect.\n", ColorGreen, ColorReset)
-		return 0
-	})
-}
-
-func (a *App) CmdOnline() int {
-	return a.withEngine(true, func(eng *core.Engine) int {
-		eng.SetEventCallback(func(event string) {
-			fmt.Printf("\r\033[K%s[Status]%s %s\ntunnelchat> ", ColorYellow, ColorReset, event)
-		})
-		eng.SetChatCallback(func(friend config.Friend, text string) {
-			name := friend.Name
-			fmt.Printf("\r\033[K%s[%s]:%s %s\ntunnelchat> ", ColorGreen, name, ColorReset, text)
-		})
-		u := eng.Identity().Public()
-		fmt.Println("================================================================================")
-		fmt.Printf("%sTunnelchat v2 online%s | User: %s%s%s | listen %s\n",
-			ColorBold, ColorReset, ColorCyan, u.Name, ColorReset, "")
-		fmt.Printf("Fingerprint: %s\n", u.Fingerprint())
-		fmt.Println("================================================================================")
-		if eng.DHTEnabled() {
-			fmt.Printf("DHT discovery: on (%d bootstrap node(s)); your public IP is advertised.\n", len(eng.DHTBootstraps()))
-		} else {
-			fmt.Println("DHT discovery: off")
-		}
-		fmt.Println("Commands:  <name> <message>  /friends  /peers  /connect <fp>  /addpeer <fp>")
-		fmt.Println("           /info  /add <invite>  /help  q")
-		fmt.Println("Limitations: no offline inbox; DHT does not punch NAT; going online exposes")
-		fmt.Println("             your IP to STUN/DHT nodes. Strangers are listed, not auto-friended.")
-		fmt.Println("             Display names are signed with a key; compare fingerprints.")
-		fmt.Println("--------------------------------------------------------------------------------")
-
-		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-		inputChan := make(chan string)
-		scanner := bufio.NewScanner(os.Stdin)
-		go func() {
-			for {
-				fmt.Print("tunnelchat> ")
-				if !scanner.Scan() {
-					close(inputChan)
-					return
-				}
-				inputChan <- strings.TrimSpace(scanner.Text())
+	fmt.Fprintf(cfg.out(), "Scanned %d nearby Wi-Fi beacon(s) via %s:\n", len(beacons), drv.Name())
+	for _, b := range beacons {
+		tag := "ordinary AP"
+		if raw, err := codec.Decode(b.SSID); err == nil {
+			if _, err := ck.OpenFrame(raw); err == nil {
+				tag = colorGreen + "WIFICHAT ENCRYPTED FRAME" + colorReset
 			}
-		}()
-		for {
+		}
+		fmt.Fprintf(cfg.out(), "  CH=%-2d RSSI=%-4d BSSID=%-17s [%s] %q\n",
+			b.Channel, b.Signal, b.BSSID, tag, b.SSID)
+	}
+	return 0
+}
+
+func waitTargetPeerIfNeeded(ctx context.Context, eng *engine.Engine, target string, out io.Writer) error {
+	if strings.TrimSpace(target) == "" {
+		return nil
+	}
+	fmt.Fprintf(out, "Waiting to discover E2EE public key for nearby peer %q...\n", target)
+	_ = eng.QueueHello()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := eng.ResolvePeer(target); err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(80 * time.Millisecond):
+		}
+	}
+	return fmt.Errorf("timed out waiting to discover peer %q on air", target)
+}
+
+func CmdSendText(cfg *Config, text string) int {
+	eng, err := buildEngine(cfg, engine.Options{})
+	if err != nil {
+		fmt.Fprintf(cfg.errOut(), "Error: %v\n", err)
+		return 1
+	}
+	if err := eng.Start(); err != nil {
+		fmt.Fprintf(cfg.errOut(), "Start failed: %v\n", err)
+		return 1
+	}
+	defer eng.Stop()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := waitTargetPeerIfNeeded(ctx, eng, cfg.To, cfg.out()); err != nil {
+		fmt.Fprintf(cfg.errOut(), "Error: %v\n", err)
+		return 1
+	}
+	if strings.TrimSpace(cfg.To) != "" {
+		err = eng.SendDirectText(ctx, cfg.To, text)
+	} else {
+		err = eng.SendText(ctx, text)
+	}
+	if err != nil {
+		fmt.Fprintf(cfg.errOut(), "Send failed: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(cfg.out(), "Message transmitted via Wi-Fi SSID (%s).\n", eng.DriverName())
+	return 0
+}
+
+func CmdSendFile(cfg *Config, path string) int {
+	out := cfg.out()
+	eng, err := buildEngine(cfg, engine.Options{
+		OnProgress: func(p engine.Progress) {
+			if p.Direction == "tx" {
+				fmt.Fprintf(out, "\r[TX %s] gen %d/%d | chunks %d/%d | %.1f B/s   ",
+					p.Label, p.DoneGens, p.TotalGens, p.DoneChunks, p.TotalChunks, p.BytesPerSec)
+				if p.Complete {
+					fmt.Fprintln(out)
+				}
+			}
+		},
+	})
+	if err != nil {
+		fmt.Fprintf(cfg.errOut(), "Error: %v\n", err)
+		return 1
+	}
+	if err := eng.Start(); err != nil {
+		fmt.Fprintf(cfg.errOut(), "Start failed: %v\n", err)
+		return 1
+	}
+	defer eng.Stop()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := waitTargetPeerIfNeeded(ctx, eng, cfg.To, out); err != nil {
+		fmt.Fprintf(cfg.errOut(), "Error: %v\n", err)
+		return 1
+	}
+	start := time.Now()
+	if err := eng.SendFile(ctx, cfg.To, path); err != nil {
+		fmt.Fprintf(cfg.errOut(), "\nFile transfer failed: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(out, "\nFile %q transmitted in %s.\n", path, time.Since(start).Round(time.Millisecond))
+	return 0
+}
+
+func CmdRecv(cfg *Config) int {
+	out := cfg.out()
+	doneOnce := make(chan struct{}, 1)
+	triggerOnce := func() {
+		if cfg.Once {
 			select {
-			case <-sigChan:
-				fmt.Printf("\n%sShutting down cleanly...%s\n", ColorYellow, ColorReset)
-				return 0
-			case line, ok := <-inputChan:
-				if !ok {
-					return 0
-				}
-				if line == "" {
-					continue
-				}
-				if line == "q" || line == "quit" || line == "/quit" || line == "exit" || line == "/exit" {
-					fmt.Printf("%sGoodbye!%s\n", ColorCyan, ColorReset)
-					return 0
-				}
-				if line == "/help" {
-					fmt.Println("  <name> <words>      send a message to a session")
-					fmt.Println("  /friends            list pinned (trusted) friends")
-					fmt.Println("  /peers or /who      list discovered online strangers")
-					fmt.Println("  /connect <fp>       handshake a stranger (does not auto-friend)")
-					fmt.Println("  /addpeer <fp>       pin a discovered stranger as a trusted friend")
-					fmt.Println("  /info               print invite")
-					fmt.Println("  /add <invite>       pin a friend from an invite")
-					fmt.Println("  q                   quit")
-					continue
-				}
-				if line == "/info" {
-					s, err := eng.Invite()
-					if err != nil {
-						fmt.Println(err)
-						continue
-					}
-					fmt.Printf("\n%sYour invite:%s\n%s%s%s\n\n", ColorYellow, ColorReset, ColorGreen, s, ColorReset)
-					continue
-				}
-				if line == "/friends" || line == "/list" {
-					printFriends(eng)
-					continue
-				}
-				if line == "/peers" || line == "/who" {
-					printPeers(eng)
-					continue
-				}
-				if strings.HasPrefix(line, "/connect ") {
-					fp := strings.TrimSpace(line[len("/connect "):])
-					if err := eng.ConnectDiscovered(fp); err != nil {
-						fmt.Printf("%s%s%s\n", ColorRed, err, ColorReset)
-					} else {
-						fmt.Printf("connecting to %s (not added as a trusted friend; use /addpeer to pin)\n", fp)
-					}
-					continue
-				}
-				if strings.HasPrefix(line, "/addpeer ") {
-					fp := strings.TrimSpace(line[len("/addpeer "):])
-					if err := eng.AddDiscovered(fp); err != nil {
-						fmt.Printf("%s%s%s\n", ColorRed, err, ColorReset)
-					} else {
-						fmt.Printf("%sPinned as a trusted friend.%s\n", ColorGreen, ColorReset)
-					}
-					continue
-				}
-				if strings.HasPrefix(line, "/add ") {
-					if err := eng.AddInvite(strings.TrimSpace(line[5:])); err != nil {
-						fmt.Printf("%sFailed to add friend: %v%s\n", ColorRed, err, ColorReset)
-					} else {
-						fmt.Printf("%sFriend added successfully!%s\n", ColorGreen, ColorReset)
-					}
-					continue
-				}
-				parts := strings.SplitN(line, " ", 2)
-				if len(parts) < 2 {
-					fmt.Println("Input format: [name] [words]  or /help")
-					continue
-				}
-				if err := eng.SendChat(parts[0], parts[1]); err != nil {
-					fmt.Printf("%s[Failed]: %v%s\n", ColorRed, err, ColorReset)
-				} else {
-					fmt.Printf("%s[Sent to %s]:%s %s\n", ColorCyan, parts[0], ColorReset, parts[1])
-				}
+			case doneOnce <- struct{}{}:
+			default:
 			}
 		}
+	}
+
+	eng, err := buildEngine(cfg, engine.Options{
+		RXOnly: true,
+		OnChat: func(m engine.ChatMessage) {
+			mode := "BCAST"
+			if m.Micro {
+				mode = "1-SSID"
+			}
+			fmt.Fprintf(out, "[%s] [%s#%s]: %s\n", mode, m.Nick, m.SenderID.Short(), m.Text)
+			triggerOnce()
+		},
+		OnFile: func(rf engine.ReceivedFile) {
+			fmt.Fprintf(out, "[FILE] from %s#%s -> %s (%d bytes, sha256=%s..., %s)\n",
+				rf.Nick, rf.SenderID.Short(), rf.SavedPath, rf.Size, rf.SHA256Hex[:12], rf.Elapsed.Round(time.Millisecond))
+			triggerOnce()
+		},
 	})
-}
-
-func printFriends(eng *core.Engine) {
-	friends := eng.ListFriends()
-	if len(friends) == 0 {
-		fmt.Println("No friends pinned yet. Use '/add <invite>'.")
-		return
-	}
-	fmt.Println("--------------------------------------------------------------------------------")
-	fmt.Printf("%-15s %-34s %s\n", "NAME", "FINGERPRINT", "SESSION")
-	fmt.Println("--------------------------------------------------------------------------------")
-	for _, f := range friends {
-		pub, err := f.Public()
-		fp := "?"
-		if err == nil {
-			fp = pub.Fingerprint()
-		}
-		status := "offline/pending"
-		if eng.HasSession(f.Name) {
-			status = "secure"
-		}
-		fmt.Printf("%-15s %-34s %s\n", f.Name, fp, status)
-	}
-	fmt.Println("--------------------------------------------------------------------------------")
-}
-
-func printPeers(eng *core.Engine) {
-	peers := eng.ListDiscovered()
-	if len(peers) == 0 {
-		fmt.Println("No discovered strangers yet. DHT must be on, and both sides online.")
-		fmt.Println("They are not trusted friends until you /addpeer <fingerprint>.")
-		return
-	}
-	fmt.Println("--------------------------------------------------------------------------------")
-	fmt.Printf("%-15s %-34s %-8s %s\n", "NAME", "FINGERPRINT", "TRUSTED", "SEEN")
-	fmt.Println("--------------------------------------------------------------------------------")
-	for _, d := range peers {
-		fp := d.Public.Fingerprint()
-		trusted := "no"
-		if eng.IsTrustedFriend(fp) {
-			trusted = "yes"
-		}
-		sess := ""
-		if eng.HasSession(fp) {
-			sess = " session"
-		}
-		fmt.Printf("%-15s %-34s %-8s %s%s\n", d.Public.Name, fp, trusted, d.Seen.Format("15:04:05"), sess)
-	}
-	fmt.Println("--------------------------------------------------------------------------------")
-	fmt.Println("Names are signed by that key, but anyone can pick any display name. Compare fingerprints.")
-	fmt.Println("Use /connect <fingerprint> to handshake, /addpeer <fingerprint> to pin as a friend.")
-}
-
-func CmdRelay(listen, token string, maxSessions int) int {
-	if token == "" {
-		fmt.Fprintln(os.Stderr, "relay requires --token")
-		return 1
-	}
-	if listen == "" {
-		listen = "127.0.0.1:0"
-	}
-	srv, err := relay.Listen(relay.Config{Listen: listen, Token: token, MaxSessions: maxSessions})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "relay listen: %v\n", err)
+		fmt.Fprintf(cfg.errOut(), "Error: %v\n", err)
 		return 1
 	}
-	defer srv.Close()
-	fmt.Printf("Relay listening on %s (opaque ciphertext only; Ctrl-C to stop)\n", srv.Addr())
-	fmt.Println("Do not expose this without understanding that IPs of users will be visible to the operator.")
+	if err := eng.Start(); err != nil {
+		fmt.Fprintf(cfg.errOut(), "Start failed: %v\n", err)
+		return 1
+	}
+	defer eng.Stop()
+
+	fmt.Fprintf(out, "Passive stealth receiver active on %s (zero Wi-Fi hotspot TX; saving files to %s)...\n",
+		eng.DriverName(), cfg.DownloadDir)
+
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-	<-sig
-	fmt.Println("relay stopped")
+	select {
+	case <-sig:
+	case <-doneOnce:
+	}
 	return 0
+}
+
+type syncWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
+}
+
+func CmdChat(cfg *Config) int {
+	out := &syncWriter{w: cfg.out()}
+	errOut := &syncWriter{w: cfg.errOut()}
+	var eng *engine.Engine
+
+	printPrompt := func() {
+		fmt.Fprint(out, "wifichat> ")
+	}
+
+	opts := engine.Options{
+		OnChat: func(m engine.ChatMessage) {
+			tag := "NEARBY"
+			col := colorGreen
+			if m.Direct {
+				tag = "E2EE-DM"
+				col = colorCyan
+			} else if m.Micro {
+				tag = "1-SSID"
+			}
+			fmt.Fprintf(out, "\r\033[K%s[%s %s#%s]:%s %s\n",
+				col, tag, m.Nick, m.SenderID.Short(), colorReset, m.Text)
+			printPrompt()
+		},
+		OnFile: func(rf engine.ReceivedFile) {
+			tag := "FILE"
+			if rf.Direct {
+				tag = "E2EE-FILE"
+			}
+			fmt.Fprintf(out, "\r\033[K%s[%s]%s %s#%s sent %q (%d bytes, sha256=%s...) -> saved to %s (%s)\n",
+				colorGreen, tag, colorReset, rf.Nick, rf.SenderID.Short(),
+				rf.FileName, rf.Size, rf.SHA256Hex[:12], rf.SavedPath, rf.Elapsed.Round(time.Millisecond))
+			printPrompt()
+		},
+		OnPeer: func(p engine.PeerInfo) {
+			fmt.Fprintf(out, "\r\033[K%s[Nearby]%s %s (id=%s, SAS=%s, slots=%d)\n",
+				colorYellow, colorReset, p.Nick, p.PeerID.Hex(), p.SAS, p.Slots)
+			printPrompt()
+		},
+		OnEvent: func(ev string) {
+			fmt.Fprintf(out, "\r\033[K%s[Info]%s %s\n", colorYellow, colorReset, ev)
+			printPrompt()
+		},
+	}
+
+	var err error
+	eng, err = buildEngine(cfg, opts)
+	if err != nil {
+		fmt.Fprintf(errOut, "Error: %v\n", err)
+		return 1
+	}
+	if err := eng.Start(); err != nil {
+		fmt.Fprintf(errOut, "Start failed: %v\n", err)
+		return 1
+	}
+	defer eng.Stop()
+
+	pub := eng.PublicIdentity()
+	chanDesc := "Passphrase Protected (Argon2id + ChaCha20-Poly1305)"
+	if eng.IsOpenChannel() {
+		chanDesc = "Open Nearby Plaza (use -k <secret> for private room, or @peer for X25519 E2EE)"
+	}
+
+	fmt.Fprintln(out, "================================================================================")
+	fmt.Fprintf(out, "%sWiFiChat Anonymous Air-Gap Console%s | Alias: %s%s%s | Ephemeral ID: %s\n",
+		colorBold, colorReset, colorCyan, pub.Nick, colorReset, pub.PeerID.Hex())
+	fmt.Fprintf(out, "Driver: %s | Codec: %s (%dB/SSID) | Channel: %s\n",
+		eng.DriverName(), eng.Codec().Mode(), eng.Codec().RawBytes(), chanDesc)
+	fmt.Fprintln(out, "--------------------------------------------------------------------------------")
+	fmt.Fprintln(out, "Commands: <text> (broadcast)   @<peer> <text> (X25519 E2EE DM)   /peers")
+	fmt.Fprintln(out, "          /sendfile [peer] <path>   /rotate   /key <pass>   /status   /help   q")
+	fmt.Fprintln(out, "================================================================================")
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	lines := make(chan string)
+	go func() {
+		sc := bufio.NewScanner(cfg.in())
+		sc.Buffer(make([]byte, 64*1024), 1024*1024)
+		for sc.Scan() {
+			lines <- strings.TrimSpace(sc.Text())
+		}
+		close(lines)
+	}()
+
+	printPrompt()
+	for {
+		select {
+		case <-ctx.Done():
+			fmt.Fprintf(out, "\n%sCleaning up hotspot SSID and ephemeral keys...%s\n", colorYellow, colorReset)
+			return 0
+		case line, ok := <-lines:
+			if !ok {
+				return 0
+			}
+			if line == "" {
+				printPrompt()
+				continue
+			}
+			if line == "q" || line == "quit" || line == "/quit" || line == "exit" || line == "/exit" {
+				return 0
+			}
+			handleInteractiveLine(ctx, eng, line, out)
+			printPrompt()
+		}
+	}
+}
+
+func waitPeerShort(ctx context.Context, eng *engine.Engine, target string, maxWait time.Duration) error {
+	if _, err := eng.ResolvePeer(target); err == nil {
+		return nil
+	}
+	_ = eng.QueueHello()
+	deadline := time.Now().Add(maxWait)
+	for time.Now().Before(deadline) {
+		if _, err := eng.ResolvePeer(target); err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
+	return fmt.Errorf("peer %q not discovered yet", target)
+}
+
+func handleInteractiveLine(ctx context.Context, eng *engine.Engine, line string, out io.Writer) {
+	switch {
+	case line == "/help":
+		fmt.Fprintln(out, "  <message>                 Broadcast encrypted message to nearby channel")
+		fmt.Fprintln(out, "  @<peer> <message>         Send X25519 E2EE direct message to <peer>")
+		fmt.Fprintln(out, "  /dm <peer> <message>      Same as @<peer> <message>")
+		fmt.Fprintln(out, "  /sendfile <path>          Broadcast binary file with Cauchy GF(256) MDS coding")
+		fmt.Fprintln(out, "  /sendfile <peer> <path>   Send X25519 E2EE binary file directly to <peer>")
+		fmt.Fprintln(out, "  /peers or /who            List nearby anonymous peers & SAS verification codes")
+		fmt.Fprintln(out, "  /rotate                   Rotate ephemeral X25519 keypair, ID, alias & AP MAC")
+		fmt.Fprintln(out, "  /key [passphrase]         Switch room passphrase (Argon2id) on the fly")
+		fmt.Fprintln(out, "  /stealth [on|off]         Toggle quiet decoy-SSID idle mode")
+		fmt.Fprintln(out, "  /hello                    Emit ephemeral X25519 key announcement now")
+		fmt.Fprintln(out, "  /status                   Show active SSIDs on air & frame counters")
+		fmt.Fprintln(out, "  q / /quit                 Exit and wipe RAM keys")
+
+	case line == "/peers" || line == "/who":
+		peers := eng.ListPeers()
+		if len(peers) == 0 {
+			fmt.Fprintln(out, "No nearby peers discovered yet (use /hello to announce).")
+			return
+		}
+		fmt.Fprintln(out, "--------------------------------------------------------------------------------")
+		fmt.Fprintf(out, "%-16s %-10s %-9s %-6s %-7s %s\n", "ALIAS", "ID", "SAS", "SLOTS", "RSSI", "SEEN")
+		fmt.Fprintln(out, "--------------------------------------------------------------------------------")
+		for _, p := range peers {
+			sas := p.SAS
+			if !p.HasPubKey {
+				sas = "(pending)"
+			}
+			fmt.Fprintf(out, "%-16s %-10s %-9s %-6d %-7d %s\n",
+				p.Nick, p.PeerID.Hex(), sas, p.Slots, p.Signal, p.LastSeen.Format("15:04:05"))
+		}
+		fmt.Fprintln(out, "--------------------------------------------------------------------------------")
+
+	case line == "/rotate":
+		pub, err := eng.RotateIdentity()
+		if err != nil {
+			fmt.Fprintf(out, "%sRotate failed: %v%s\n", colorRed, err, colorReset)
+			return
+		}
+		fmt.Fprintf(out, "%sNew anonymous identity:%s %s (ID %s)\n", colorGreen, colorReset, pub.Nick, pub.PeerID.Hex())
+
+	case line == "/hello":
+		_ = eng.QueueHello()
+		fmt.Fprintln(out, "Queued anonymous Hello key announcement.")
+
+	case line == "/status":
+		pub := eng.PublicIdentity()
+		tx, rx := eng.FrameCounters()
+		fmt.Fprintf(out, "Alias: %s | ID: %s | Driver: %s\n", pub.Nick, pub.PeerID.Hex(), eng.DriverName())
+		fmt.Fprintf(out, "Frames TX: %d | Frames RX: %d | Active SSIDs: %v\n", tx, rx, eng.CurrentSSIDs())
+
+	case strings.HasPrefix(line, "/key"):
+		pass := strings.TrimSpace(strings.TrimPrefix(line, "/key"))
+		eng.SetPassphrase(pass)
+
+	case strings.HasPrefix(line, "/stealth"):
+		arg := strings.TrimSpace(strings.TrimPrefix(line, "/stealth"))
+		on := arg == "" || arg == "on" || arg == "true" || arg == "1"
+		eng.SetStealth(on)
+		fmt.Fprintf(out, "Stealth idle mode: %v\n", on)
+
+	case strings.HasPrefix(line, "/sendfile ") || strings.HasPrefix(line, "/bcastfile "):
+		isBcast := strings.HasPrefix(line, "/bcastfile ")
+		rest := strings.TrimSpace(line[strings.IndexByte(line, ' ')+1:])
+		var target, path string
+		if isBcast {
+			path = rest
+		} else {
+			parts := strings.Fields(rest)
+			if len(parts) == 1 {
+				path = parts[0]
+			} else if len(parts) >= 2 {
+				tail := strings.TrimSpace(rest[len(parts[0]):])
+				if strings.HasPrefix(parts[0], "@") {
+					target = parts[0]
+					path = tail
+				} else if _, err := eng.ResolvePeer(parts[0]); err == nil {
+					target = parts[0]
+					path = tail
+				} else if _, err := os.Stat(tail); err == nil {
+					target = parts[0]
+					path = tail
+				} else {
+					path = rest
+				}
+			}
+		}
+		if path == "" {
+			fmt.Fprintln(out, "Usage: /sendfile [peer] <filepath>")
+			return
+		}
+		if target != "" {
+			_ = waitPeerShort(ctx, eng, target, 4*time.Second)
+		}
+		start := time.Now()
+		if err := eng.SendFile(ctx, target, path); err != nil {
+			fmt.Fprintf(out, "%s[File Failed]: %v%s\n", colorRed, err, colorReset)
+		} else {
+			mode := "broadcast"
+			if target != "" {
+				mode = "E2EE -> " + target
+			}
+			fmt.Fprintf(out, "%s[File Sent (%s) in %s]:%s %s\n",
+				colorCyan, mode, time.Since(start).Round(time.Millisecond), colorReset, path)
+		}
+
+	case strings.HasPrefix(line, "@") || strings.HasPrefix(line, "/dm "):
+		raw := line
+		if strings.HasPrefix(raw, "/dm ") {
+			raw = strings.TrimSpace(raw[4:])
+		} else {
+			raw = raw[1:]
+		}
+		parts := strings.SplitN(raw, " ", 2)
+		if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
+			fmt.Fprintln(out, "Usage: @<peer> <message>")
+			return
+		}
+		_ = waitPeerShort(ctx, eng, parts[0], 4*time.Second)
+		if err := eng.SendDirectText(ctx, parts[0], parts[1]); err != nil {
+			fmt.Fprintf(out, "%s[DM Failed]: %v%s\n", colorRed, err, colorReset)
+		} else {
+			fmt.Fprintf(out, "%s[E2EE -> %s]:%s %s\n", colorCyan, parts[0], colorReset, parts[1])
+		}
+
+	case strings.HasPrefix(line, "/"):
+		fmt.Fprintf(out, "Unknown command %q (type /help)\n", line)
+
+	default:
+		if err := eng.SendText(ctx, line); err != nil && !errors.Is(err, context.Canceled) {
+			fmt.Fprintf(out, "%s[Send Failed]: %v%s\n", colorRed, err, colorReset)
+		} else {
+			fmt.Fprintf(out, "%s[Broadcast]:%s %s\n", colorCyan, colorReset, line)
+		}
+	}
 }

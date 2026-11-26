@@ -1,18 +1,18 @@
 .PHONY: all build test clean run
 
-BINARY=bin/tunnelchat
+BINARY=bin/wifichat
 
 all: build
 
 build:
 	@mkdir -p bin
-	go build -o $(BINARY) ./cmd/tunnelchat
+	go build -o $(BINARY) ./cmd/wifichat
 
 test:
-	go test -v ./...
+	go test -v -race ./...
 
 clean:
-	rm -rf bin/tunnelchat tunnelchat.xml tunnelchat.json fakechat.xml
+	rm -rf bin/ downloads/
 
 run: build
 	./$(BINARY)

@@ -1,94 +1,213 @@
-# Tunnelchat (v2)
+# WiFiChat
 
 [English](README.md) | [中文](README_zh.md)
 
-**Tunnelchat v2** 是命令行 P2P 聊天工具。双方先钉扎长期身份，再收集候选地址并双向探测，然后做 **Noise_IK** 握手（X25519 + ChaCha20-Poly1305 + SHA-256，并用 Ed25519 绑定身份）。没有通往旧版 DES/MD5 协议的静默降级。
+**WiFiChat** 是一个基于 **Wi-Fi 热点名称（SSID，最长 32 字节）** 的近距离**匿名加密文本聊天与二进制文件传输**工具。
 
-本实现仍在本地演进。测试覆盖的是 **本机回环以及用户态 NAT/STUN/DHT/中继模拟**，不是真实的双重 NAT 或 CGNAT。单元测试通过不等于公网一定能打通。
-
----
-
-## v2 变化
-
-* **身份：** 随机 32 字节种子派生 Ed25519（签名/钉扎）和 X25519（Noise 静态键）。密码不再作为密钥材料。
-* **会话：** `Noise_IK_25519_ChaChaPoly_SHA256`，固定 prologue。传输层带滑动重放窗口。被篡改或重放的包会丢弃。DHT 上的地址在钉扎探测与握手成功前不可信。
-* **共用 UDP 口：** STUN、可选 DHT、探测、会话、可选中继共用一个套接字，**STUN 映射端口就是聊天端口**。映射会定期刷新，不会把配置里的旧 IP 当成永久地址。
-* **候选：** 本机 IPv4/IPv6 与 STUN 反射地址。邀请串是带外分发，可以带局域网提示。**公网 DHT 记录不放明文私网地址**；可选的 BEP44 风格提示先加密，再只保留公网端点。
-* **DHT：** `online` **默认启用 Mainline DHT 发现**（使用文档中列出的公共引导节点，可覆盖或关闭）。**DHT 只用于发现**，不是聊天中继，也不能单独打洞。消息载荷仍端到端加密（Noise/AEAD）。上线会把公网 IP 暴露给引导节点和 DHT 节点。通过 v2 公共 swarm 和 **Ed25519 签名的在线记录**（显示名与公钥绑定）可以列出当前在线的陌生人，**不会自动写入可信好友列表**。不能把 DHT 上的 IP 直接当成身份。未签名、过期或伪造的在线记录会被忽略。明文公共记录不放私网地址。
-* **中继：** 可选、由运行者自己启动的 UDP 转发。载荷对中继不透明。用 token MAC 做访问控制，有会话上限和空闲回收。默认听在回环地址。这不是必备中心服务器。
+每个客户端仅通过**动态修改自身共享热点名称（802.11 Beacon SSID）**并扫描周围 Wi-Fi 列表来收发数据：**无需连接对方的 Wi-Fi 热点**，不分配 IP，不建立任何 TCP/UDP 连接，完全脱离互联网、运营商基站或任何服务器运行。
 
 ---
 
-## 不兼容与迁移
+## 通信实现原理
 
-v2 **不能与 v1**（DES-ECB / MD5 / `tunnelchat.xml`）互通。已有 v1 XML **只检测、不改写**。`new` 不会覆盖已有 v2 文件，也拒绝 `.xml` 路径。请用新的 JSON 路径（默认 `tunnelchat.json`）创建新身份。没有自动导入旧账号或好友密钥。
+正常使用 Wi-Fi 时，设备必须先“连接（Associate）”上路由器并获取 IP 才能收发数据包，这会在路由器侧留下 MAC、DHCP 租约和连接日志。但在连接之前，任何开启热点的手机或电脑都会以每秒约 10～20 次的频率向空中广播 **IEEE 802.11 Beacon（信标帧）**，其中包含明文可见的 **Wi-Fi 名字（SSID，标准上限 32 字节）**。
 
----
+**WiFiChat 把这个“无需连接即可被周围设备扫到”的 32 字节 SSID 变成了加密、抗丢包的空中数据总线：**
 
-## 编译
+```mermaid
+flowchart TB
+    subgraph TX["发送端（动态修改自身热点 SSID）"]
+        direction TB
+        A["输入文本消息 / 二进制文件（计算 SHA-256）"]
+        B{"是否超短广播文本？\n(ascii91 <= 11B / raw32 <= 17B)"}
+        M["单 SSID 极速微帧 (FrameMicro)\nBLAKE2s 流加密 + 32-bit 内层认证"]
+        C["flate 压缩 -> ChaCha20-Poly1305 认证加密\n（Argon2id 房间密钥 或 X25519 ECDH 点对点端到端密钥）"]
+        D["按代切分（每代 K <= 64 片）\n系统分片 + Cauchy GF(256) MDS 喷泉纠删码"]
+        E["SIV 帧级掩码保护（26B / 32B）\n4B 带密钥 BLAKE2s MAC + 全掩码帧体（隐藏所有头部特征）"]
+        F["SSID 编码（严格 <= 32 字节）\nascii91（26B -> 32 安全字符）| raw32（32 原始字节）"]
+        A --> B
+        B -- "是（1 次扫描即达）" --> M --> E
+        B -- "否（长文本 / 文件 / 私聊）" --> C --> D --> E
+        E --> F
+    end
 
-需要 Go 1.26 或更高：
+    subgraph AIR["2.4 GHz 802.11 空中信标介质（零连接 / 无 IP / 无公网）"]
+        direction LR
+        AP["热点广播 1..16 个并行 SSID (--slots)\n与周围普通路由器（CMCC、TP-LINK 等）混杂在空中"]
+    end
 
-```bash
-make build
-make test
+    subgraph RX["接收端（仅扫描周围 Wi-Fi 名称列表）"]
+        direction TB
+        G["锁定单信道极速扫描 (--channel 6 -> 2437 MHz)\niw (~80ms) / nmcli / Android / Windows / macOS / sim"]
+        H["SSID 解码 + 32-bit SIV MAC 校验\n瞬间过滤 99.99999998% 的路人 Wi-Fi 与伪造帧"]
+        I{"解析帧类型"}
+        J["增量高斯-约旦消元解码器 GF(256)\n256 个序号中任意扫到 K 个不重复 SSID 即可还原整代"]
+        K["ChaCha20-Poly1305 解密 + 解压 + SHA-256 校验\n展示消息 / 防穿越安全保存文件 (0600)"]
+        ACK["生成 32 代位图确认帧 (FrameAck)\n（--rx-only 纯静默模式下不发射）"]
+        G --> H --> I
+        I -- "FrameMicro" --> K
+        I -- "FrameData" --> J --> K
+        J -. "反馈缺口片数 / 完成位图" .-> ACK
+    end
+
+    F ==>|"修改热点名 SetSSIDs()"| AP
+    AP ==>|"无关联扫描 Scan()"| G
+    ACK -.->|"修改接收端热点名反向确认"| AP
 ```
 
-测试使用进程内假 STUN/DHT/中继和用户态 NAT，**不会**向公网 Mainline DHT 宣布。
+### 32 字节 SSID 帧结构拆解（以默认通用 `ascii91` 模式为例）
+
+```text
+ 空中 802.11 Wi-Fi 名称（32 个安全可打印 ASCII 字符，不含空格/引号/反斜杠）
+ ┌──────────────────────────────────────────────────────────────────────────────┐
+ │                Base91 编码字符串（91^32 > 256^26 = 208 bits）                 │
+ └──────────────────────────────────────┬───────────────────────────────────────┘
+                                        ▼
+ 解码后的 26 字节原始帧
+ ┌────────────────────┬─────────────────────────────────────────────────────────┐
+ │   帧认证标签 (4B)   │              SIV 流掩码帧体 (22 Bytes)                   │
+ │ BLAKE2s(K_mac,body)│         body XOR BLAKE2s(K_mask, Tag)[0:22]             │
+ └────────────────────┴─────────────────────────┬───────────────────────────────┘
+                                                ▼ 脱掩码后的 3 种 22 字节帧体
+ [00] FrameData（长文本 / 二进制文件喷泉分片帧）：
+ ┌──────────┬───────────┬───────────────┬─────────┬─────────────────────────────┐
+ │00│ K-1(6b)│XferID(2B) │Final(1b)Gen15b│ Seq(1B) │    纠删码分片净荷 (16 Bytes) │
+ └──┴───────┴───────────┴───────────────┴─────────┴─────────────────────────────┘
+   1 Byte      2 Bytes       2 Bytes       1 Byte     seq < K: 原始系统分片
+                                                      seq >= K: Cauchy GF(256) 冗余片
+ [11] FrameMicro（单 SSID 极速短消息帧）：
+ ┌──────────┬───────────┬───────────────┬─────────┬─────────────────────────────┐
+ │11│C│Len5b│PeerShort2B│  Nonce (4B)   │MAC2 (4B)│   加密 UTF-8 文本 (<= 11 B)  │
+ └──┴─┴─────┴───────────┴───────────────┴─────────┴─────────────────────────────┘
+
+ [01] FrameAck（多代滑动窗口位图确认帧）：
+ ┌──────────┬───────────┬───────────────┬─────────┬──────────────┬──────┬───────┐
+ │01│Flags6b│XferID(2B) │ AckPeerID(4B) │BaseGen2B│GenBitmap(4B) │Need1B│Pad(8B)│
+ └──────────┴───────────┴───────────────┴─────────┴──────────────┴──────┴───────┘
+```
+
+### 喷泉纠删码流水线时序（消除停等重传卡顿）
+
+修改热点名与系统扫描 Wi-Fi 是两套不同步的定时器，扫描间隙必然出现随机漏扫。WiFiChat 采用 **Cauchy $\text{GF}(256)$ 喷泉流 + 多代滑动窗口**：
+
+```mermaid
+sequenceDiagram
+    participant A as 发送端热点 (Alice)
+    participant Air as 空中 802.11 信标 (<=32B SSID)
+    participant B as 接收端扫描器 (Bob)
+
+    Note over A,B: 第 0 代数据（假设切分为 K = 4 片：seq 0, 1, 2, 3）
+    A->>Air: 热点改名 = Enc(Gen 0, seq=0 [原始片])
+    Air->>B: 扫描捕获 seq=0（矩阵秩 1/4）
+    A->>Air: 热点改名 = Enc(Gen 0, seq=1 [原始片])
+    Note right of Air: 扫描间隙漏掉了 seq=1！
+    A->>Air: 热点改名 = Enc(Gen 0, seq=2 [原始片])
+    Air->>B: 扫描捕获 seq=2（矩阵秩 2/4）
+    A->>Air: 热点改名 = Enc(Gen 0, seq=3 [原始片])
+    Air->>B: 扫描捕获 seq=3（矩阵秩 3/4）
+    A->>Air: 热点改名 = Enc(Gen 0, seq=4 [Cauchy 冗余片])
+    Note over A: 不停顿等待，直接流水线切入第 1 代！
+    Air->>B: 扫描捕获 seq=4 -> 秩满 4/4！高斯消元直接算出漏掉的 seq=1！
+    B-->>Air: 接收端热点改名 = Enc(FrameAck: BaseGen=1, 已完成 Gen 0)
+    Air-->>A: Alice 扫到确认帧，继续推进后续代直至完成
+```
+
+### 广播信道下如何知道“谁在和我聊、我和谁聊”？
+
+1. **频道口令隔离（`-k <口令>`）：** 口令经 `Argon2id`（32 MiB）派生外层帧 MAC 与房间密钥；无口令者连第一层 4 字节 MAC 都无法通过，只会看到普通随机路由器名。
+2. **内存临时公钥自动发现（`KindHello`）：** 每次启动在内存中生成一次性 `X25519` 公私钥并算出 4 字节 `PeerID`（默认代号 `anon-xxxx`），上线时自动广播 `Hello` 信标交换公钥；先上线的节点发现新节点时会自动响应式回发 `Hello`，输入 `/peers` 即可列出附近所有在线匿名节点。
+3. **群聊广播 vs. 点对点私聊（`@<代号>` / `/sendfile <代号>`）：**
+   * **直接输入文字**为房间内广播（带发送人 `SenderID` 与昵称）。
+   * **`@<代号>` 私聊或指定对象发文件**会在头部写入目标 `RecipientID`（其他人直接忽略且不回 ACK），并用双方 `X25519` ECDH 共享密钥加密，同时校验 `DerivePeerID(senderPub) == SenderID` 防冒充；当面可核对 `/peers` 显示的 6 位 **SAS 短认证码**（如 `7F2-C19`）防中间人。
 
 ---
 
-## 用法
+## 核心特性
 
-```bash
-./bin/tunnelchat -c alice.json new Alice
-./bin/tunnelchat -c bob.json new Bob
-./bin/tunnelchat -c alice.json info
-./bin/tunnelchat -c bob.json add 'TC2INV1....'
-./bin/tunnelchat -c alice.json online
-./bin/tunnelchat -c bob.json online
-```
-
-`online` 内：`<名字> <消息>`，`/friends`，`/peers`（或 `/who`），`/connect <指纹>`，`/addpeer <指纹>`，`/info`，`/add <邀请>`，`q`。
-
-DHT 发现（`online` 默认开启）：
-
-```bash
-./bin/tunnelchat -c alice.json online
-./bin/tunnelchat -c alice.json --no-dht online
-# 或在 JSON 中设置 { "dht": { "disabled": true } }
-./bin/tunnelchat -c alice.json --dht-bootstrap 127.0.0.1:6881 online
-```
-
-默认引导节点：`router.bittorrent.com:6881`、`dht.transmissionbt.com:6881`、`router.utorrent.com:6881`、`dht.libtorrent.org:25401`。`info` 不会向 DHT 宣布。单元测试不会套用这份默认列表，因此不会访问公网。
-
-双方都 `online` 且 DHT 开启时，`/peers` 或 `/who` 会列出发现到的陌生人（显示名与长期 Ed25519 公钥一起被签名）。任何人都可以起名「Alice」，**请核对指纹**。在线记录约五分钟过期，也可能缺失或被污染。`/connect <指纹>` 做加密握手但不会自动加好友；`/addpeer <指纹>` 才会钉扎到好友列表。邀请串仍然可用。这不是匿名工具：别人能看到有 tunnelchat 客户端在你的公网 IP 上在线。
-
-可选中继：
-
-```bash
-./bin/tunnelchat relay --listen 127.0.0.1:9000 --token '长随机口令'
-./bin/tunnelchat -c alice.json --relay-server 127.0.0.1:9000 --relay-token '长随机口令' online
-```
-
-中继运营者能看到 IP 与时序，看不到消息明文。不要在未评估风险的情况下挂无人值守的公网中继。
+* **强匿名性：** 零 Wi-Fi 关联，支持 `--rx-only` 零发射纯静默接收；无任何本地磁盘密钥文件；支持 `/rotate` 随时轮换密钥、ID、代号与随机 MAC；支持 `--prefix` / `--decoy` / `--stealth` 热点伪装。
+* **双层安全：** 单帧 32-bit `BLAKE2s` SIV 防污染 + 完整消息/文件 256-bit `ChaCha20-Poly1305` AEAD 认证解密 + 时间戳防重放 + 二进制文件 `SHA-256` 端到端校验与防目录穿越安全保存（`0600`）。
+* **多维提速：** `ascii91`（26B/SSID）与 `raw32`（32B/SSID）高密度编码、单 SSID `FrameMicro` 短消息极速通道、加密前自适应 `flate` 压缩、Cauchy $\text{GF}(256)$ MDS 喷泉纠删码、`hostapd` 最多 16 路并行虚拟热点（`<10ms` 刷新信标）与 `iw` 单频点极速扫描（`~80ms`）。
 
 ---
 
-## 限制（请先读）
+## 传输速率实测仿真（`./bin/wifichat bench`）
 
-* **不保证能穿透「子局域网」。** 同一子网在有局域网候选或 hairpin 可用时通常可以。跨子网还要有路由和 UDP 放行。访客隔离、双重 NAT、CGNAT、对称 NAT 在没有中继时经常失败。已实现同时探测，**没有端口预测**。本仓库**没有**做真实双重 NAT/CGNAT 实测。
-* **开启 DHT 的 `online` 会把公网 IP 暴露**给引导/DHT 节点以及查询公共 swarm 的人。这不是匿名工具。聊天内容仍端到端加密，但 IP 与在线状态会暴露。
-* **陌生人显示名不唯一。** 签名把名字绑在密钥上，但任何人都可以自称「Alice」。请核对指纹。
-* **DHT 记录会过期、可能缺失或被污染。** 在线记录 TTL 很短。DHT 仍然不能打洞；困难 NAT 仍可能需要中继。
-* **没有离线收件箱。** 双方必须同时 `online`。
-* **IPv6：** 会收集本机候选；主监听仍是 IPv4（`udp4`）。纯 IPv6 收包尚未做完。
-* **邀请串**含身份密钥、会合秘密和可选局域网端点，应当能力凭证保管，不要发到公共 DHT 或公开论坛。
-* **密钥文件**（JSON 种子）须保持私密（`0600`）。
-* **DHT 存储**（含签名可变记录）是尽力而为、有大小和时效限制；并非所有 Mainline 节点都实现 BEP 44。
+以下为运行真实引擎（含加密、帧头、异步扫描抖动及 10%～30% 随机漏扫丢包）测得的净有效载荷速率：
+
+| 硬件模式档位 | 测试载荷 | 改名 / 扫描周期 | 漏扫丢包 | 仿真耗时 | 净有效速率 | 发送 SSID 数 |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: |
+| 手机单路共享热点（`1 slot`, `ascii91`） | 短消息（`9 B`, 单 SSID 通道） | `850ms / 550ms` | `15%` | `0.78 s` | `12 B/s` | `4` |
+| 手机单路共享热点（`1 slot`, `ascii91`） | 多行中文坐标消息（`1.2 KB`） | `850ms / 550ms` | `15%` | `18.7 s` | `75 B/s` | `33` |
+| 手机单路共享热点（`1 slot`, `ascii91`） | 纯随机二进制文件（`2 KB`） | `850ms / 550ms` | `15%` | `2m 10s` | `16 B/s` | `155` |
+| Linux `nmcli + iw`（`1 slot`, `ascii91`） | 纯随机二进制文件（`4 KB`） | `650ms / 350ms` | `15%` | `3m 05s` | `22 B/s` | `287` |
+| Linux `hostapd`（`1 slot`, `raw32`） | 纯随机二进制文件（`8 KB`） | `160ms / 120ms` | `15%` | `1m 23s` | `98 B/s` | `523` |
+| Linux `hostapd`（`4 slots`, `raw32`） | 纯随机二进制文件（`16 KB`） | `160ms / 120ms` | `15%` | `40.5 s` | `405 B/s` | `1012` |
+| 双网卡 `hostapd`（`8 slots`, `raw32`） | 纯随机二进制文件（`32 KB`） | `120ms / 80ms` | `10%` | `35.5 s` | `923 B/s` | `2304` |
+| 双网卡 `hostapd`（`8 slots`, `raw32`） | 纯随机二进制（`32 KB`, 高干扰） | `120ms / 80ms` | `30%` | `38.4 s` | `854 B/s` | `2536` |
+| 双网卡 `hostapd`（`8 slots`, `raw32`） | 结构化 JSON/日志（`32 KB`） | `120ms / 80ms` | `10%` | `4.92 s` | `6.51 KB/s` | `328` |
+| 纯静默接收 `RX-Only`（`8 slots`, `raw32`） | 零发射盲收随机二进制（`16 KB`） | `120ms / 80ms` | `15%` | `17.8 s` | `920 B/s` | `1170` |
 
 ---
 
-## 目录
+## 编译与测试
 
-见英文 README 的 Project layout 一节。
+需要 Go 1.26 或更高版本：
+
+```bash
+make build    # 生成 bin/wifichat
+make test     # 运行全套单元与高丢包集成测试（含 -race）
+```
+
+---
+
+## 快速上手
+
+```bash
+# 查看当前机器可用的 Wi-Fi 热点/扫描驱动后端
+./bin/wifichat drivers
+
+# 运行内置多硬件档位端到端传输速率仿真
+./bin/wifichat bench
+
+# 启动交互式匿名附近聊天与传文件终端（自动选择后端）
+./bin/wifichat -k "room-passphrase"
+
+# Linux 高速多 SSID 模式（hostapd 8 路并行 SSID + Raw32 编码 + 双网卡收发分离）
+sudo ./bin/wifichat -d hostapd --iface wlan0 --scan-iface wlan1 --slots 8 --encoding raw32 -k "room-passphrase"
+
+# 手机共享热点 / Android Termux / 自定义脚本驱动
+./bin/wifichat -d android -k "room-passphrase"
+./bin/wifichat -d cmd --tx-cmd 'uci set wireless.@wifi-iface[0].ssid={ssid} && wifi reload' --rx-cmd 'iwinfo wlan0 scan'
+
+# 纯被动静默接收端（完全不开启热点，静默接收附近消息与二进制文件到 ./inbox）
+./bin/wifichat -k "room-passphrase" --download-dir ./inbox recv
+
+# 命令行单次发送文本或二进制文件
+./bin/wifichat -k "room-passphrase" send "B2出口集合"
+./bin/wifichat -k "room-passphrase" --to anon-a47f sendfile ./secret.zip
+
+# 无无线网卡机器 / 本地多终端联调（基于共享虚拟 802.11 空中目录，严格经 32 字节 SSID 交互）
+./bin/wifichat -d sim -k "demo"        # 终端 1
+./bin/wifichat -d sim -k "demo"        # 终端 2
+```
+
+### 交互终端命令
+
+| 命令 | 说明 |
+| :--- | :--- |
+| `<文本内容>` | 向附近频道加密广播文本（短消息自动走单 SSID 极速通道） |
+| `@<代号/ID> <文本>` | 向指定附近节点发送 `X25519` 端到端加密私聊 |
+| `/sendfile <文件路径>` | 向附近频道压缩并加密广播二进制文件 |
+| `/sendfile <代号/ID> <文件路径>` | 向指定节点发送 `X25519` 端到端加密二进制文件 |
+| `/peers` 或 `/who` | 查看已发现的附近匿名节点、临时 ID 与 SAS 验证码 |
+| `/rotate` | 立即轮换内存临时密钥对、匿名 ID、昵称与热点 MAC |
+| `/key [新口令]` | 动态切换房间口令（`Argon2id`） |
+| `/stealth [on\|off]` | 开启/关闭空闲诱饵热点静默模式 |
+| `/status` | 查看当前驱动、空中实时 SSID 列表及收发帧计数 |
+| `q` / `/quit` | 退出程序，清理热点并擦除内存密钥 |
+
+---
+
+## 目录说明与物理边界
+
+见英文主文档 [Project Layout](README.md#project-layout) 与 [Physical & Practical Notes](README.md#physical--practical-notes)。

@@ -1,6 +1,4 @@
-bin/fakechat
-bin/tunnelchat
-fakechat.xml
-tunnelchat.xml
-tunnelchat.json
+bin/
+downloads/
+coverage.out
 *.log
