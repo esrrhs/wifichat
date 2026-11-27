@@ -1,0 +1,5 @@
+Initial release of WiFiChat for Android:
+- Anonymous, zero-association nearby chat & file transfer over 32-byte Wi-Fi SSIDs
+- End-to-end X25519 + ChaCha20-Poly1305 AEAD encryption & Argon2id room isolation
+- Cauchy GF(256) MDS fountain coding for reliable scan recovery
+- RX-only passive scan out of the box; optional SoftAP TX via built-in Wireless Debugging or Shizuku

@@ -180,6 +180,20 @@ make build    # builds bin/wifichat
 make test     # runs unit & integration tests with -race
 ```
 
+### Android App
+
+A Jetpack Compose client lives in [`android/`](android/). It embeds the same Go engine via `gomobile` and an **in-app ADB wireless-debugging runtime** for SoftAP SSID TX (no separate Shizuku install). WifiManager is used for RX-only when not activated.
+
+```bash
+# Needs Android SDK/NDK, JDK 17, and: go install golang.org/x/mobile/cmd/gomobile@latest && gomobile init
+make android-apk
+# APK: android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+On the phone: enable **Wireless debugging**, pair once inside the app (Settings → Activate SoftAP TX), grant location / nearby-Wi-Fi permissions, set a room passphrase, then tap the Wi-Fi button. Without activation the app still starts in **RX-only** mode.
+
+Details: [`android/README.md`](android/README.md).
+
 ---
 
 ## Usage
@@ -240,6 +254,8 @@ pkg/protocol/   Compact Data/Ack/Micro wire frames & compressed Text/File/Hello 
 pkg/wifi/       Drivers: Linux hostapd/iw, nmcli, Android, macOS, Windows, custom cmd, sim
 pkg/engine/     Multi-slot fountain scheduler, sliding-window ARQ, deduplication, file writer
 pkg/cli/        Interactive console, one-shot CLI handlers & throughput simulator
+mobile/         gomobile bind API (Session + Host bridge for Android)
+android/        Jetpack Compose phone app + embedded ADB SoftAP TX runtime
 ```
 
 ---

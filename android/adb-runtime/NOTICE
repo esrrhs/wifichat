@@ -1,0 +1,6 @@
+adb-runtime contains code derived from:
+  https://github.com/xswl369/android-wireless-debug (Apache-2.0)
+  which implements AOSP adb pair / STLS protocols and a pure-Java SPAKE2 port
+  of BoringSSL spake25519.c.
+
+WiFiChat ships its own generated ADB client identity (assets/adb/*).

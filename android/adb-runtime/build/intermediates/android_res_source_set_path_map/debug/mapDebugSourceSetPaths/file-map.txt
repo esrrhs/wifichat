@@ -1,0 +1,9 @@
+com.wirelessdebug.adb-runtime-pngs-0 /home/project/wifichat/android/adb-runtime/build/generated/res/pngs/debug
+com.wirelessdebug.adb-runtime-updated_navigation_xml-1 /home/project/wifichat/android/adb-runtime/build/generated/updated_navigation_xml/debug
+com.wirelessdebug.adb-runtime-mergeDebugResources-2 /home/project/wifichat/android/adb-runtime/build/intermediates/incremental/debug/mergeDebugResources/merged.dir
+com.wirelessdebug.adb-runtime-mergeDebugResources-3 /home/project/wifichat/android/adb-runtime/build/intermediates/incremental/debug/mergeDebugResources/stripped.dir
+com.wirelessdebug.adb-runtime-debug-4 /home/project/wifichat/android/adb-runtime/build/intermediates/merged_res/debug/mergeDebugResources
+com.wirelessdebug.adb-runtime-debug-5 /home/project/wifichat/android/adb-runtime/build/intermediates/packaged_res/debug/packageDebugResources
+com.wirelessdebug.adb-runtime-debug-6 /home/project/wifichat/android/adb-runtime/src/debug/res
+com.wirelessdebug.adb-runtime-main-7 /home/project/wifichat/android/adb-runtime/src/main/res
+gradleHome-0 /root/.gradle

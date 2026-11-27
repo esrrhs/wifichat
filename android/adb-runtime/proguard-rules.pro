@@ -1,0 +1,3 @@
+-keep class com.wirelessdebug.** { *; }
+-keep class org.conscrypt.** { *; }
+-dontwarn org.conscrypt.**

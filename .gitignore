@@ -2,3 +2,9 @@ bin/
 downloads/
 coverage.out
 *.log
+android/.gradle/
+android/app/build/
+android/build/
+android/local.properties
+android/app/libs/*.aar
+android/app/libs/*.jar

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">WiFiChat</string>
+    <string name="notification_channel">WiFiChat air link</string>
+    <string name="notification_title">WiFiChat is on air</string>
+    <string name="notification_text">Scanning / broadcasting via Wi-Fi SSIDs</string>
+</resources>

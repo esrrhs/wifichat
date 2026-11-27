@@ -167,6 +167,20 @@ make build    # 生成 bin/wifichat
 make test     # 运行全套单元与高丢包集成测试（含 -race）
 ```
 
+### Android App
+
+[`android/`](android/) 下是 Jetpack Compose 手机客户端：用 `gomobile` 嵌入同一套 Go 引擎，并内置 **无线调试 ADB 运行时** 改 SoftAP SSID（无需另装 Shizuku）。未激活时自动 RX-only。
+
+```bash
+# 需要 Android SDK/NDK、JDK 17，以及：go install golang.org/x/mobile/cmd/gomobile@latest && gomobile init
+make android-apk
+# APK: android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+手机端：打开 **无线调试**，在 App 设置里「激活 SoftAP TX」配对一次，授予定位/附近 Wi-Fi 权限，设置房间口令后点 Wi-Fi 按钮上线。未激活时仍可 **仅接收**。
+
+详见 [`android/README.md`](android/README.md)。
+
 ---
 
 ## 快速上手

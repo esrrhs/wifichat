@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WiFiChat Privacy Policy</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      margin: 0 auto;
+      max-width: 48rem;
+      padding: 1.5rem 1.25rem 3rem;
+      font: 16px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+    h1 { font-size: 1.75rem; line-height: 1.3; margin: 0 0 0.5rem; }
+    h2 { font-size: 1.2rem; margin: 2rem 0 0.75rem; }
+    p, li { margin: 0.6rem 0; }
+    .meta { opacity: 0.75; font-size: 0.95rem; margin-bottom: 1.5rem; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.92em; }
+  </style>
+</head>
+<body>
+  <h1>WiFiChat Privacy Policy</h1>
+  <p class="meta">Effective date: 2026-11-27 · Developer: esrrhs · Contact: esrrhs@163.com</p>
+
+  <p>
+    Welcome to <strong>WiFiChat</strong> (Android package
+    <code>com.esrrhs.wifichat</code>, the “App”), developed by
+    <strong>esrrhs</strong> (“we”). Please read this policy before use.
+    By continuing to use the App, you acknowledge this policy. If you disagree, stop using the App.
+  </p>
+
+  <h2>1. Information we collect and use</h2>
+  <p>
+    WiFiChat is an offline, zero-association nearby communication tool that exchanges encrypted messages
+    and files over local 802.11 Wi-Fi SSID beacons and scans. We do <strong>not</strong> run any servers,
+    user accounts, analytics, or advertising SDKs, and we do <strong>not</strong> collect, upload, or sell
+    any personal information, location data, or device identifiers.
+  </p>
+  <p>Permissions and data processed strictly on your device:</p>
+  <ul>
+    <li><strong>Location &amp; Nearby Wi-Fi Devices (<code>ACCESS_FINE_LOCATION</code>, <code>ACCESS_COARSE_LOCATION</code>, <code>NEARBY_WIFI_DEVICES</code>)</strong>: Required by Android to scan nearby Wi-Fi SSIDs so the App can receive nearby encrypted beacons. Location coordinates are never queried, stored, or transmitted.</li>
+    <li><strong>Ephemeral Cryptographic Keys</strong>: X25519 keypairs and derived session keys exist only in RAM for the current session and are discarded when you rotate keys or exit.</li>
+    <li><strong>Received Files &amp; Preferences</strong>: Incoming files are saved locally in the App’s private storage (<code>files/downloads/</code>), and local settings (such as room passphrase or nickname) remain on-device.</li>
+    <li><strong>Foreground Service &amp; Notifications (<code>FOREGROUND_SERVICE_CONNECTED_DEVICE</code>, <code>POST_NOTIFICATIONS</code>)</strong>: Used to keep the local Wi-Fi scan/broadcast session active and display its status notification.</li>
+    <li><strong>Local Wireless Debugging (Optional)</strong>: If you choose to activate SoftAP TX via Android Wireless Debugging, pairing and shell commands run strictly over loopback on your device.</li>
+  </ul>
+
+  <h2>2. Storage and protection</h2>
+  <p>
+    All messages are encrypted end-to-end or room-isolated with ChaCha20-Poly1305 AEAD and Argon2id.
+    No cloud backup is enabled (<code>allowBackup="false"</code>). You may clear local data at any time
+    in Android Settings or by uninstalling the App.
+  </p>
+
+  <h2>3. Sharing and disclosure</h2>
+  <p>
+    We do not collect or share your personal data with third parties. Encrypted Wi-Fi SSID frames are
+    broadcast locally over the air to nearby receivers within radio range.
+  </p>
+
+  <h2>4. Third parties and open source</h2>
+  <p>
+    The App is open-source software. Google Play may process limited distribution-related data under
+    Google’s own policies.
+  </p>
+
+  <h2>5. Children</h2>
+  <p>The App is not directed at children and we do not knowingly collect children’s personal data.</p>
+
+  <h2>6. Changes</h2>
+  <p>We may update this policy on this page with a new effective date. Please review it periodically.</p>
+
+  <h2>7. Contact</h2>
+  <p>Questions: <a href="mailto:esrrhs@163.com">esrrhs@163.com</a>.</p>
+</body>
+</html>
