@@ -38,7 +38,7 @@ public class AdbShellController {
     private static final String TAG = "AdbShellController";
     private static final Object LOCK = new Object();
 
-    private static AdbClient adb;
+    private static volatile AdbClient adb;
     private static long lastUsedMs;
     private static long lastFailMs;
     /** 设备侧拒绝内置 key（授权失效/被撤销），需重新配对。 */
@@ -51,7 +51,7 @@ public class AdbShellController {
     }
 
     public static boolean isConnected() {
-        synchronized (LOCK) { return adb != null; }
+        return adb != null;
     }
 
     /** 确保无线调试通道已连接；未连接时尝试建立（mDNS/扫描+握手，可能耗时数秒）。 */
@@ -168,22 +168,8 @@ public class AdbShellController {
                 return adb;
             }
         }
-        // 候选全部失败：补充一次全量监听端口兜底（/proc 不可读时）
-        for (int port : scanLocalPorts()) {
-            if (candidates.contains(port)) continue;
-            AdbClient c = tryConnectPort(port, key, certPem);
-            if (c != null) {
-                adb = c;
-                lastUsedMs = System.currentTimeMillis();
-                cachePort(ctx, port);
-                PairState.markPaired(ctx);
-                Log.i(TAG, "connected via scan port " + port);
-                writeDiag(ctx, "connected port=" + port + " host=" + hostProbe(port));
-                return adb;
-            }
-        }
         lastFailMs = System.currentTimeMillis();
-        writeDiag(ctx, "no port connected. candidates=" + candidates + " mdns=" + discoverMdns(ctx));
+        writeDiag(ctx, "no port connected. candidates=" + candidates);
         return null;
     }
 

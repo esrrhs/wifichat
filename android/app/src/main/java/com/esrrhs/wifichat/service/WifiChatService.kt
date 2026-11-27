@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -416,23 +417,31 @@ class WifiChatService : Service() {
     }
 
     fun setRoomKey(key: String) {
-        sessionRef.get()?.setKey(key)
+        val session = sessionRef.get() ?: return
         _state.value = _state.value.copy(openChannel = key.isBlank())
+        scope.launch(Dispatchers.Default) {
+            session.setKey(key)
+        }
     }
 
     fun setNick(nick: String) {
         val session = sessionRef.get() ?: return
-        val json = session.setNick(nick)
-        val obj = JSONObject(json)
-        _state.value = _state.value.copy(
-            identityNick = obj.optString("nick"),
-            identityPeerId = obj.optString("peerId"),
-        )
+        scope.launch(Dispatchers.Default) {
+            val json = session.setNick(nick)
+            val obj = JSONObject(json)
+            _state.value = _state.value.copy(
+                identityNick = obj.optString("nick"),
+                identityPeerId = obj.optString("peerId"),
+            )
+        }
     }
 
     fun setStealth(on: Boolean) {
-        sessionRef.get()?.setStealth(on)
+        val session = sessionRef.get() ?: return
         _state.value = _state.value.copy(stealth = on)
+        scope.launch(Dispatchers.Default) {
+            session.setStealth(on)
+        }
     }
 
     private fun refreshStatus() {
@@ -483,16 +492,18 @@ class WifiChatService : Service() {
     }
 
     private fun append(line: ChatLine, coalesceProgress: Boolean = false) {
-        val cur = _messages.value.toMutableList()
-        if (coalesceProgress && cur.isNotEmpty() && cur.last().kind == ChatLine.Kind.PROGRESS) {
-            cur[cur.lastIndex] = line
-        } else {
-            cur.add(line)
-            if (cur.size > 500) {
-                cur.removeAt(0)
+        _messages.update { prev ->
+            val cur = prev.toMutableList()
+            if (coalesceProgress && cur.isNotEmpty() && cur.last().kind == ChatLine.Kind.PROGRESS) {
+                cur[cur.lastIndex] = line
+            } else {
+                cur.add(line)
+                if (cur.size > 500) {
+                    cur.removeAt(0)
+                }
             }
+            cur
         }
-        _messages.value = cur
     }
 
     private fun nextId(): Long = synchronized(this) { ++lineSeq }

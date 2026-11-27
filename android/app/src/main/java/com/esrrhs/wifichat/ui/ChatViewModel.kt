@@ -89,8 +89,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun refreshPrivilege() {
         _privilege.value = PrivilegeShell.backend()
-        // Also surface "paired but not connected" via AdbActivator for UI if needed.
-        AdbActivator.status(getApplication())
     }
 
     fun ensureStarted() {

@@ -1,6 +1,8 @@
 package com.esrrhs.wifichat.wifi
 
 import android.util.Log
+import com.wirelessdebug.PairState
+import com.wirelessdebug.WdbContext
 import com.wirelessdebug.service.AdbShellController
 
 /**
@@ -44,6 +46,10 @@ object PrivilegeShell {
     }
 
     private fun tryAdbConnect(): Boolean {
+        val ctx = WdbContext.get()
+        if (ctx != null && !PairState.isPaired(ctx)) {
+            return false
+        }
         return try {
             AdbShellController.ensureConnected()
         } catch (t: Throwable) {
