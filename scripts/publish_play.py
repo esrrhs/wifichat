@@ -51,7 +51,7 @@ def main():
         print(f"==> Bundle uploaded successfully! VersionCode: {version_code}")
 
         target_track = os.environ.get('PLAY_TRACK', sys.argv[1] if len(sys.argv) > 1 else 'internal')
-        version_name = os.environ.get('RELEASE_NAME', '0.1.0')
+        version_name = os.environ.get('RELEASE_NAME', '0.2.0')
         release_body = {
             'releases': [{
                 'name': version_name,

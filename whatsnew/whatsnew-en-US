@@ -1,5 +1,6 @@
-Initial release of WiFiChat for Android:
-- Anonymous, zero-association nearby chat & file transfer over 32-byte Wi-Fi SSIDs
-- End-to-end X25519 + ChaCha20-Poly1305 AEAD encryption & Argon2id room isolation
-- Cauchy GF(256) MDS fountain coding for reliable scan recovery
-- RX-only passive scan out of the box; optional SoftAP TX via built-in Wireless Debugging or Shizuku
+WiFiChat 0.2.0:
+- 3-tab chat layout: Public open chat, Room (passphrase-isolated), and DM (X25519 E2EE)
+- Tap any sender's nickname in Public or Room chat to start an E2EE DM
+- Runtime custom nickname support (Settings → Nickname)
+- Added in-app Help guide and RX-only onboarding banner
+- Updated chat-bubble + Wi-Fi launcher icon and dark-mode contrast fixes
