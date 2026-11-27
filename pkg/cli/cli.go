@@ -314,6 +314,7 @@ func CmdSendFile(cfg *Config, path string) int {
 
 func CmdRecv(cfg *Config) int {
 	out := cfg.out()
+	var outMu sync.Mutex
 	doneOnce := make(chan struct{}, 1)
 	triggerOnce := func() {
 		if cfg.Once {
@@ -331,12 +332,16 @@ func CmdRecv(cfg *Config) int {
 			if m.Micro {
 				mode = "1-SSID"
 			}
+			outMu.Lock()
 			fmt.Fprintf(out, "[%s] [%s#%s]: %s\n", mode, m.Nick, m.SenderID.Short(), m.Text)
+			outMu.Unlock()
 			triggerOnce()
 		},
 		OnFile: func(rf engine.ReceivedFile) {
+			outMu.Lock()
 			fmt.Fprintf(out, "[FILE] from %s#%s -> %s (%d bytes, sha256=%s..., %s)\n",
 				rf.Nick, rf.SenderID.Short(), rf.SavedPath, rf.Size, rf.SHA256Hex[:12], rf.Elapsed.Round(time.Millisecond))
+			outMu.Unlock()
 			triggerOnce()
 		},
 	})
@@ -350,8 +355,10 @@ func CmdRecv(cfg *Config) int {
 	}
 	defer eng.Stop()
 
+	outMu.Lock()
 	fmt.Fprintf(out, "Passive stealth receiver active on %s (zero Wi-Fi hotspot TX; saving files to %s)...\n",
 		eng.DriverName(), cfg.DownloadDir)
+	outMu.Unlock()
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
