@@ -242,13 +242,14 @@ func waitTargetPeerIfNeeded(ctx context.Context, eng *engine.Engine, target stri
 }
 
 func CmdSendText(cfg *Config, text string) int {
+	out, errOut := syncedWriters(cfg)
 	eng, err := buildEngine(cfg, engine.Options{})
 	if err != nil {
-		fmt.Fprintf(cfg.errOut(), "Error: %v\n", err)
+		fmt.Fprintf(errOut, "Error: %v\n", err)
 		return 1
 	}
 	if err := eng.Start(); err != nil {
-		fmt.Fprintf(cfg.errOut(), "Start failed: %v\n", err)
+		fmt.Fprintf(errOut, "Start failed: %v\n", err)
 		return 1
 	}
 	defer eng.Stop()
@@ -256,8 +257,8 @@ func CmdSendText(cfg *Config, text string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := waitTargetPeerIfNeeded(ctx, eng, cfg.To, cfg.out()); err != nil {
-		fmt.Fprintf(cfg.errOut(), "Error: %v\n", err)
+	if err := waitTargetPeerIfNeeded(ctx, eng, cfg.To, out); err != nil {
+		fmt.Fprintf(errOut, "Error: %v\n", err)
 		return 1
 	}
 	if strings.TrimSpace(cfg.To) != "" {
@@ -266,15 +267,17 @@ func CmdSendText(cfg *Config, text string) int {
 		err = eng.SendText(ctx, text)
 	}
 	if err != nil {
-		fmt.Fprintf(cfg.errOut(), "Send failed: %v\n", err)
+		fmt.Fprintf(errOut, "Send failed: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(cfg.out(), "Message transmitted via Wi-Fi SSID (%s).\n", eng.DriverName())
+	fmt.Fprintf(out, "Message transmitted via Wi-Fi SSID (%s).\n", eng.DriverName())
 	return 0
 }
 
 func CmdSendFile(cfg *Config, path string) int {
-	out := cfg.out()
+	// OnProgress is invoked from the engine's txLoop goroutine while the main
+	// goroutine also writes status lines. Both streams must share one lock.
+	out, errOut := syncedWriters(cfg)
 	eng, err := buildEngine(cfg, engine.Options{
 		OnProgress: func(p engine.Progress) {
 			if p.Direction == "tx" {
@@ -287,11 +290,11 @@ func CmdSendFile(cfg *Config, path string) int {
 		},
 	})
 	if err != nil {
-		fmt.Fprintf(cfg.errOut(), "Error: %v\n", err)
+		fmt.Fprintf(errOut, "Error: %v\n", err)
 		return 1
 	}
 	if err := eng.Start(); err != nil {
-		fmt.Fprintf(cfg.errOut(), "Start failed: %v\n", err)
+		fmt.Fprintf(errOut, "Start failed: %v\n", err)
 		return 1
 	}
 	defer eng.Stop()
@@ -300,12 +303,12 @@ func CmdSendFile(cfg *Config, path string) int {
 	defer stop()
 
 	if err := waitTargetPeerIfNeeded(ctx, eng, cfg.To, out); err != nil {
-		fmt.Fprintf(cfg.errOut(), "Error: %v\n", err)
+		fmt.Fprintf(errOut, "Error: %v\n", err)
 		return 1
 	}
 	start := time.Now()
 	if err := eng.SendFile(ctx, cfg.To, path); err != nil {
-		fmt.Fprintf(cfg.errOut(), "\nFile transfer failed: %v\n", err)
+		fmt.Fprintf(errOut, "\nFile transfer failed: %v\n", err)
 		return 1
 	}
 	fmt.Fprintf(out, "\nFile %q transmitted in %s.\n", path, time.Since(start).Round(time.Millisecond))
@@ -313,8 +316,7 @@ func CmdSendFile(cfg *Config, path string) int {
 }
 
 func CmdRecv(cfg *Config) int {
-	out := cfg.out()
-	var outMu sync.Mutex
+	out, errOut := syncedWriters(cfg)
 	doneOnce := make(chan struct{}, 1)
 	triggerOnce := func() {
 		if cfg.Once {
@@ -332,33 +334,27 @@ func CmdRecv(cfg *Config) int {
 			if m.Micro {
 				mode = "1-SSID"
 			}
-			outMu.Lock()
 			fmt.Fprintf(out, "[%s] [%s#%s]: %s\n", mode, m.Nick, m.SenderID.Short(), m.Text)
-			outMu.Unlock()
 			triggerOnce()
 		},
 		OnFile: func(rf engine.ReceivedFile) {
-			outMu.Lock()
 			fmt.Fprintf(out, "[FILE] from %s#%s -> %s (%d bytes, sha256=%s..., %s)\n",
 				rf.Nick, rf.SenderID.Short(), rf.SavedPath, rf.Size, rf.SHA256Hex[:12], rf.Elapsed.Round(time.Millisecond))
-			outMu.Unlock()
 			triggerOnce()
 		},
 	})
 	if err != nil {
-		fmt.Fprintf(cfg.errOut(), "Error: %v\n", err)
+		fmt.Fprintf(errOut, "Error: %v\n", err)
 		return 1
 	}
 	if err := eng.Start(); err != nil {
-		fmt.Fprintf(cfg.errOut(), "Start failed: %v\n", err)
+		fmt.Fprintf(errOut, "Start failed: %v\n", err)
 		return 1
 	}
 	defer eng.Stop()
 
-	outMu.Lock()
 	fmt.Fprintf(out, "Passive stealth receiver active on %s (zero Wi-Fi hotspot TX; saving files to %s)...\n",
 		eng.DriverName(), cfg.DownloadDir)
-	outMu.Unlock()
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
@@ -369,8 +365,10 @@ func CmdRecv(cfg *Config) int {
 	return 0
 }
 
+// syncWriter serializes writes from engine callbacks (which run on their own
+// goroutines) and the CLI's main goroutine.
 type syncWriter struct {
-	mu sync.Mutex
+	mu *sync.Mutex
 	w  io.Writer
 }
 
@@ -380,9 +378,16 @@ func (s *syncWriter) Write(p []byte) (int, error) {
 	return s.w.Write(p)
 }
 
+// syncedWriters wraps stdout and stderr with one shared mutex. Tests and shell
+// redirections frequently point both streams at the same underlying buffer, so
+// separate per-stream locks would still allow concurrent writes to that buffer.
+func syncedWriters(cfg *Config) (io.Writer, io.Writer) {
+	mu := &sync.Mutex{}
+	return &syncWriter{mu: mu, w: cfg.out()}, &syncWriter{mu: mu, w: cfg.errOut()}
+}
+
 func CmdChat(cfg *Config) int {
-	out := &syncWriter{w: cfg.out()}
-	errOut := &syncWriter{w: cfg.errOut()}
+	out, errOut := syncedWriters(cfg)
 	var eng *engine.Engine
 
 	printPrompt := func() {

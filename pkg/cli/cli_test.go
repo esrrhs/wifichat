@@ -79,12 +79,27 @@ func TestInteractiveChatDMFileAndCommands(t *testing.T) {
 
 	_ = aliceScript
 	_, _ = aliceInW.WriteString("/help\n")
-	time.Sleep(180 * time.Millisecond) // allow mutual Hello discovery
+	time.Sleep(300 * time.Millisecond) // allow mutual Hello discovery on slow CI runners
 	_, _ = aliceInW.WriteString("/peers\n/status\nhello broadcast\n")
-	time.Sleep(80 * time.Millisecond)
+	time.Sleep(120 * time.Millisecond)
+	_, _ = aliceInW.WriteString("@bob private-e2ee-msg\n")
+	// The simulated air is lossy; a single DM frame can be missed when the
+	// runner is loaded, so send it once more before moving on.
+	time.Sleep(150 * time.Millisecond)
 	_, _ = aliceInW.WriteString("@bob private-e2ee-msg\n")
 	_, _ = aliceInW.WriteString("/sendfile bob " + srcFile + "\n")
-	time.Sleep(120 * time.Millisecond)
+
+	// Keep Alice alive until Bob has actually saved the file. Quitting right
+	// after enqueueing frames used to tear down the engine while TX was still
+	// in flight, which made this test flaky on CI.
+	deadline := time.Now().Add(6 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(filepath.Join(bobDL, "secret.dat")); err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
 	_, _ = aliceInW.WriteString("/stealth on\n/rotate\nq\n")
 	_ = aliceInW.Close()
 
