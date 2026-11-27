@@ -103,7 +103,9 @@ fun ChatScreen(
 
     LaunchedEffect(Unit) {
         onRequestPermissions()
-        vm.ensureStarted()
+        if (messages.isEmpty()) {
+            vm.ensureStarted()
+        }
     }
 
     val visibleMessages = remember(messages, activeTab, dmPeerId) {

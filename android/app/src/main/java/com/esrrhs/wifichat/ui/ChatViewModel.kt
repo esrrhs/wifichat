@@ -99,6 +99,71 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun loadDemoData() {
+        if (_messages.value.isNotEmpty()) return
+        val now = System.currentTimeMillis()
+        _link.value = _link.value.copy(
+            running = true,
+            identityNick = "me",
+            identityPeerId = "d4e1a902",
+            canTransmit = true,
+            rxOnly = false,
+            openChannel = true,
+            peerCount = 3,
+            txFrames = 14,
+            rxFrames = 38,
+            statusText = "On air",
+        )
+        _peers.value = listOf(
+            WifiChatService.PeerRow("alice", "8f2a1104", "7F2-C19", -48),
+            WifiChatService.PeerRow("bob", "3c197b22", "4A1-E08", -56),
+            WifiChatService.PeerRow("carol", "7a0455e1", "9D3-B12", -64),
+        )
+        _messages.value = listOf(
+            WifiChatService.ChatLine(
+                id = 1,
+                kind = WifiChatService.ChatLine.Kind.CHAT,
+                nick = "alice",
+                peerId = "8f2a1104",
+                text = "Anyone nearby? No signal in the subway.",
+                micro = false,
+                isOpenChannel = true,
+                timeMs = now - 120_000,
+            ),
+            WifiChatService.ChatLine(
+                id = 2,
+                kind = WifiChatService.ChatLine.Kind.CHAT,
+                nick = "bob",
+                peerId = "3c197b22",
+                text = "Copy! At exit B2",
+                micro = true,
+                isOpenChannel = true,
+                timeMs = now - 90_000,
+            ),
+            WifiChatService.ChatLine(
+                id = 3,
+                kind = WifiChatService.ChatLine.Kind.CHAT,
+                nick = "me",
+                peerId = "d4e1a902",
+                text = "On my way, 2 mins out!",
+                micro = false,
+                isOpenChannel = true,
+                isMine = true,
+                timeMs = now - 60_000,
+            ),
+            WifiChatService.ChatLine(
+                id = 4,
+                kind = WifiChatService.ChatLine.Kind.CHAT,
+                nick = "carol",
+                peerId = "7a0455e1",
+                text = "Tap my name if you need the map file over E2EE DM.",
+                micro = false,
+                isOpenChannel = true,
+                timeMs = now - 25_000,
+            ),
+        )
+    }
+
     fun selectTab(tab: ChatTab) {
         _activeTab.value = tab
         val svc = WifiChatService.instance ?: return

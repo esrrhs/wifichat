@@ -44,6 +44,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        if (intent?.getBooleanExtra("demo", false) == true) {
+            vm.loadDemoData()
+        }
         setContent {
             WifiChatTheme {
                 ChatScreen(

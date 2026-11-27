@@ -105,9 +105,9 @@ def main():
     ]:
         sh(f"pm grant {PKG} {perm}")
 
-    sh(f"am start -n {PKG}/.MainActivity")
-    wait_for_text("Public", timeout_s=30)
-    time.sleep(3.5)
+    sh(f"am start -n {PKG}/.MainActivity --ez demo true")
+    wait_for_text("Anyone nearby?", timeout_s=30)
+    time.sleep(2.0)
 
     # 1. Home Public chatroom screen
     screencap("phone-1-home.png")
