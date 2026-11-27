@@ -43,7 +43,9 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SecondaryTabRow
@@ -128,19 +130,20 @@ fun ChatScreen(
         }
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    listOf(
-                        Color(0xFF0B1220),
-                        Color(0xFF0E1A2E),
-                        Color(0xFF0B1220),
+    CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onBackground) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        listOf(
+                            Color(0xFF0B1220),
+                            Color(0xFF0E1A2E),
+                            Color(0xFF0B1220),
+                        ),
                     ),
                 ),
-            ),
-    ) {
+        ) {
         // Soft radar rings behind the header
         Box(
             Modifier
@@ -332,6 +335,7 @@ fun ChatScreen(
                 vm.openDm(p.peerId, p.nick)
             },
         )
+    }
     }
 }
 
