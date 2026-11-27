@@ -1,0 +1,82 @@
+name: Capture Play Store Screenshots
+
+on:
+  workflow_dispatch:
+
+jobs:
+  screenshots:
+    name: Boot emulator and capture 9:16 screenshots
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Android NDK and gomobile
+        run: |
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          SM="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SM" ]; then
+            SM=$(find "$SDK" -path '*/cmdline-tools/*/bin/sdkmanager' | sort | tail -1)
+          fi
+          yes | "$SM" --licenses >/dev/null || true
+          NDK_PKG=$("$SM" --list 2>/dev/null | awk '/^[[:space:]]*ndk;/{print $1}' | sort -V | tail -1)
+          "$SM" --install "$NDK_PKG"
+          echo "ANDROID_NDK_HOME=$SDK/${NDK_PKG//;/\/}" >> "$GITHUB_ENV"
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Init gomobile and build AAR
+        env:
+          WIFICHAT_GOMOBILE_TARGETS: android/amd64
+        run: |
+          gomobile init
+          bash android/scripts/build_mobile.sh
+
+      - name: Build Debug APK
+        working-directory: android
+        run: ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Enable KVM group perms
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Boot emulator and capture screenshots
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: false
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: |
+            adb install -r android/app/build/outputs/apk/debug/app-debug.apk
+            python3 -u scripts/take_screenshots.py
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: play-store-screenshots
+          path: phone-*.png
+          if-no-files-found: warn
+          retention-days: 7
