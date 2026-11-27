@@ -71,7 +71,6 @@ class MainActivity : ComponentActivity() {
             add(Manifest.permission.ACCESS_COARSE_LOCATION)
             if (Build.VERSION.SDK_INT >= 33) {
                 add(Manifest.permission.NEARBY_WIFI_DEVICES)
-                add(Manifest.permission.POST_NOTIFICATIONS)
             }
         }.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED

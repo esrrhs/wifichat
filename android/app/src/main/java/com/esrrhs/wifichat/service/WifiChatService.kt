@@ -197,7 +197,6 @@ class WifiChatService : Service() {
     override fun onCreate() {
         super.onCreate()
         instance = this
-        createChannel()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -211,15 +210,14 @@ class WifiChatService : Service() {
                 val nick = intent.getStringExtra(EXTRA_NICK).orEmpty()
                 val key = intent.getStringExtra(EXTRA_KEY).orEmpty()
                 val stealth = intent.getBooleanExtra(EXTRA_STEALTH, false)
-                var rxOnly = intent.getBooleanExtra(EXTRA_RX_ONLY, false)
+                val rxOnly = intent.getBooleanExtra(EXTRA_RX_ONLY, false)
                 val prefix = intent.getStringExtra(EXTRA_PREFIX).orEmpty()
-                startForegroundNotification()
                 scope.launch {
                     startLink(nick, key, stealth, rxOnly, prefix)
                 }
             }
         }
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     override fun onDestroy() {
@@ -567,7 +565,7 @@ class WifiChatService : Service() {
                 putExtra(EXTRA_RX_ONLY, rxOnly)
                 putExtra(EXTRA_PREFIX, prefix)
             }
-            context.startForegroundService(i)
+            context.startService(i)
         }
 
         fun stop(context: Context) {
