@@ -26,44 +26,57 @@ def screencap(path):
     print(f"Saved {path} ({len(res.stdout)} bytes)")
 
 def dump_ui():
+    sh("rm -f /sdcard/ui.xml")
     sh("uiautomator dump /sdcard/ui.xml")
-    xml_text = adb("shell", "cat /sdcard/ui.xml")
+    xml_text = adb("shell", "cat /sdcard/ui.xml", check=False)
+    if not xml_text.strip().startswith("<"):
+        return None
     return ET.fromstring(xml_text)
 
-def wait_for_text(needle, timeout_s=30):
+def has_text(needle):
+    root = dump_ui()
+    if root is None:
+        return False
+    for node in root.iter("node"):
+        txt = (node.attrib.get("text", "") + " " + node.attrib.get("content-desc", ""))
+        if needle in txt:
+            return True
+    return False
+
+def wait_for_text(needle, timeout_s=25):
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         try:
-            root = dump_ui()
-            for node in root.iter("node"):
-                txt = node.attrib.get("text", "") + " " + node.attrib.get("content-desc", "")
-                if needle in txt:
-                    return True
-        except Exception:
-            pass
+            if has_text(needle):
+                print(f"Verified UI text: {needle!r}")
+                return True
+        except Exception as e:
+            print(f"wait_for_text({needle!r}) err: {e}")
         time.sleep(1.5)
+    print(f"Warning: timed out waiting for {needle!r}", file=sys.stderr)
     return False
 
-def find_and_tap(match_fn, desc):
-    for _ in range(6):
+def tap_and_wait(match_fn, desc, expect_text, retries=4):
+    for attempt in range(retries):
         try:
             root = dump_ui()
-            for node in root.iter("node"):
-                if match_fn(node):
-                    bounds = node.attrib.get("bounds", "")
-                    m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds)
-                    if m:
-                        x1, y1, x2, y2 = map(int, m.groups())
-                        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-                        print(f"Tapping {desc} at ({cx}, {cy})")
-                        sh(f"input tap {cx} {cy}")
-                        time.sleep(1.5)
-                        return True
-        except Exception:
-            pass
+            if root is not None:
+                for node in root.iter("node"):
+                    if match_fn(node):
+                        bounds = node.attrib.get("bounds", "")
+                        m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds)
+                        if m:
+                            x1, y1, x2, y2 = map(int, m.groups())
+                            cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+                            print(f"Attempt {attempt+1}: tapping {desc} at ({cx}, {cy})")
+                            sh(f"input tap {cx} {cy}")
+                            if wait_for_text(expect_text, timeout_s=10):
+                                time.sleep(1.0)
+                                return True
+        except Exception as e:
+            print(f"tap_and_wait({desc}) err: {e}")
         time.sleep(1.0)
-    print(f"Warning: could not find {desc}", file=sys.stderr)
-    return False
+    raise RuntimeError(f"Failed to open {desc} (expected {expect_text!r})")
 
 def main():
     for _ in range(25):
@@ -94,24 +107,24 @@ def main():
 
     sh(f"am start -n {PKG}/.MainActivity")
     wait_for_text("Public", timeout_s=30)
-    time.sleep(2)
+    time.sleep(3.5)
 
     # 1. Home Public chatroom screen
     screencap("phone-1-home.png")
 
     # 2. Room tab
-    if find_and_tap(lambda n: n.attrib.get("text") == "Room", "Room tab"):
-        screencap("phone-2-room.png")
+    tap_and_wait(lambda n: n.attrib.get("text") == "Room", "Room tab", "Enter room passphrase")
+    screencap("phone-2-room.png")
 
     # 3. Help sheet
-    if find_and_tap(lambda n: n.attrib.get("content-desc") == "Help", "Help"):
-        screencap("phone-3-help.png")
-        sh("input keyevent 4")
-        time.sleep(1.2)
+    tap_and_wait(lambda n: n.attrib.get("content-desc") == "Help", "Help", "How to use WiFiChat")
+    screencap("phone-3-help.png")
+    sh("input keyevent 4")
+    time.sleep(1.5)
 
     # 4. Settings sheet
-    if find_and_tap(lambda n: n.attrib.get("content-desc") == "Settings", "Settings"):
-        screencap("phone-4-settings.png")
+    tap_and_wait(lambda n: n.attrib.get("content-desc") == "Settings", "Settings", "Air settings")
+    screencap("phone-4-settings.png")
 
 if __name__ == "__main__":
     main()
