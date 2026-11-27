@@ -52,11 +52,12 @@ def main():
 
         target_track = os.environ.get('PLAY_TRACK', sys.argv[1] if len(sys.argv) > 1 else 'internal')
         version_name = os.environ.get('RELEASE_NAME', '0.2.0')
+        release_status = os.environ.get('PLAY_STATUS', 'completed')
         release_body = {
             'releases': [{
                 'name': version_name,
                 'versionCodes': [str(version_code)],
-                'status': 'completed',
+                'status': release_status,
                 'releaseNotes': [
                     {'language': 'zh-CN', 'text': notes_zh},
                     {'language': 'en-US', 'text': notes_en},
