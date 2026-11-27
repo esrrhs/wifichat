@@ -20,5 +20,5 @@ android {
 
 dependencies {
     implementation(libs.androidx.core.ktx)
-    implementation("org.conscrypt:conscrypt-android:2.5.3")
+    implementation("org.conscrypt:conscrypt-android:2.9.0")
 }
