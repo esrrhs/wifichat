@@ -46,6 +46,9 @@ class WifiChatService : Service() {
         val text: String = "",
         val direct: Boolean = false,
         val micro: Boolean = false,
+        val isOpenChannel: Boolean = true,
+        val isMine: Boolean = false,
+        val targetPeer: String = "",
         val path: String = "",
         val size: Int = 0,
         val timeMs: Long = System.currentTimeMillis(),
@@ -112,6 +115,8 @@ class WifiChatService : Service() {
                     text = text.orEmpty(),
                     direct = direct,
                     micro = micro,
+                    isOpenChannel = _state.value.openChannel,
+                    targetPeer = if (direct) peerID.orEmpty() else "",
                     timeMs = if (unixMs > 0) unixMs else System.currentTimeMillis(),
                 ),
             )
@@ -137,6 +142,8 @@ class WifiChatService : Service() {
                     path = savedPath.orEmpty(),
                     size = size.toInt(),
                     direct = direct,
+                    isOpenChannel = _state.value.openChannel,
+                    targetPeer = if (direct) peerID.orEmpty() else "",
                 ),
             )
             refreshStatus()
@@ -302,7 +309,7 @@ class WifiChatService : Service() {
         _state.value = LinkState(statusText = "Idle")
     }
 
-    fun sendText(raw: String) {
+    fun sendText(raw: String, directPeer: String? = null) {
         val text = raw.trim()
         if (text.isEmpty()) return
         val session = sessionRef.get() ?: run {
@@ -312,13 +319,17 @@ class WifiChatService : Service() {
         scope.launch {
             _state.value = _state.value.copy(sending = true)
             try {
+                val isDirect = !directPeer.isNullOrBlank() || text.startsWith("@")
+                var resolvedTarget = directPeer.orEmpty()
                 withContext(Dispatchers.IO) {
-                    if (text.startsWith("@")) {
+                    if (!directPeer.isNullOrBlank()) {
+                        session.sendDirect(directPeer, text)
+                    } else if (text.startsWith("@")) {
                         val sp = text.indexOf(' ')
                         if (sp <= 1) throw IllegalArgumentException("Usage: @peer message")
-                        val peer = text.substring(1, sp).trim()
+                        resolvedTarget = text.substring(1, sp).trim()
                         val body = text.substring(sp + 1).trim()
-                        session.sendDirect(peer, body)
+                        session.sendDirect(resolvedTarget, body)
                     } else {
                         session.sendText(text)
                     }
@@ -327,10 +338,13 @@ class WifiChatService : Service() {
                     ChatLine(
                         id = nextId(),
                         kind = ChatLine.Kind.CHAT,
-                        nick = "me",
+                        nick = _state.value.identityNick.ifEmpty { "me" },
                         peerId = _state.value.identityPeerId,
                         text = text,
-                        direct = text.startsWith("@"),
+                        direct = isDirect,
+                        isOpenChannel = _state.value.openChannel,
+                        isMine = true,
+                        targetPeer = resolvedTarget,
                     ),
                 )
             } catch (t: Throwable) {
@@ -406,6 +420,16 @@ class WifiChatService : Service() {
     fun setRoomKey(key: String) {
         sessionRef.get()?.setKey(key)
         _state.value = _state.value.copy(openChannel = key.isBlank())
+    }
+
+    fun setNick(nick: String) {
+        val session = sessionRef.get() ?: return
+        val json = session.setNick(nick)
+        val obj = JSONObject(json)
+        _state.value = _state.value.copy(
+            identityNick = obj.optString("nick"),
+            identityPeerId = obj.optString("peerId"),
+        )
     }
 
     fun setStealth(on: Boolean) {

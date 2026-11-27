@@ -1,6 +1,7 @@
 package com.esrrhs.wifichat.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,14 +19,18 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Groups
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
@@ -41,8 +46,10 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SecondaryTabRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -57,6 +64,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -80,16 +88,43 @@ fun ChatScreen(
     val prefs by vm.chatPrefs.collectAsStateWithLifecycle()
     val draft by vm.draft.collectAsStateWithLifecycle()
     val privilege by vm.privilege.collectAsStateWithLifecycle()
+    val activeTab by vm.activeTab.collectAsStateWithLifecycle()
+    val dmPeerId by vm.dmPeerId.collectAsStateWithLifecycle()
+    val dmPeerNick by vm.dmPeerNick.collectAsStateWithLifecycle()
 
     var showSettings by remember { mutableStateOf(false) }
     var showPeers by remember { mutableStateOf(false) }
+    var showHelp by remember { mutableStateOf(false) }
     var showAdbActivate by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val privilegeReady = privilege != PrivilegeShell.Backend.NONE
 
-    LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) {
-            listState.animateScrollToItem(messages.lastIndex)
+    LaunchedEffect(Unit) {
+        onRequestPermissions()
+        vm.ensureStarted()
+    }
+
+    val visibleMessages = remember(messages, activeTab, dmPeerId) {
+        when (activeTab) {
+            ChatTab.PUBLIC -> messages.filter {
+                it.kind == WifiChatService.ChatLine.Kind.SYSTEM ||
+                    it.kind == WifiChatService.ChatLine.Kind.PROGRESS ||
+                    (!it.direct && it.isOpenChannel)
+            }
+            ChatTab.ROOM -> messages.filter {
+                it.kind == WifiChatService.ChatLine.Kind.SYSTEM ||
+                    it.kind == WifiChatService.ChatLine.Kind.PROGRESS ||
+                    (!it.direct && !it.isOpenChannel)
+            }
+            ChatTab.DM -> messages.filter {
+                it.direct && (dmPeerId == null || it.targetPeer == dmPeerId || it.peerId == dmPeerId)
+            }
+        }
+    }
+
+    LaunchedEffect(visibleMessages.size) {
+        if (visibleMessages.isNotEmpty()) {
+            listState.animateScrollToItem(visibleMessages.lastIndex)
         }
     }
 
@@ -129,6 +164,7 @@ fun ChatScreen(
                 link = link,
                 peerCount = peers.size,
                 privilege = privilege,
+                onHelp = { showHelp = true },
                 onSettings = { showSettings = true },
                 onPeers = { showPeers = true },
                 onToggle = {
@@ -140,6 +176,49 @@ fun ChatScreen(
                 onRotate = { vm.rotate() },
             )
 
+            SecondaryTabRow(
+                selectedTabIndex = activeTab.ordinal,
+                containerColor = Color.Transparent,
+                contentColor = MaterialTheme.colorScheme.primary,
+            ) {
+                Tab(
+                    selected = activeTab == ChatTab.PUBLIC,
+                    onClick = { vm.selectTab(ChatTab.PUBLIC) },
+                    text = { Text("Public") },
+                )
+                Tab(
+                    selected = activeTab == ChatTab.ROOM,
+                    onClick = { vm.selectTab(ChatTab.ROOM) },
+                    text = { Text("Room") },
+                )
+                Tab(
+                    selected = activeTab == ChatTab.DM,
+                    onClick = { vm.selectTab(ChatTab.DM) },
+                    text = {
+                        Text(
+                            if (dmPeerNick != null) "DM · $dmPeerNick" else "DM",
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    },
+                )
+            }
+
+            if (activeTab == ChatTab.ROOM) {
+                RoomKeyBar(
+                    currentKey = prefs.key,
+                    onJoinRoom = { vm.joinRoom(it) },
+                )
+            } else if (activeTab == ChatTab.DM) {
+                DmHeaderBar(
+                    dmPeerId = dmPeerId,
+                    dmPeerNick = dmPeerNick,
+                    peers = peers,
+                    onSelectPeer = { p -> vm.openDm(p.peerId, p.nick) },
+                    onClearPeer = { vm.clearDmPeer() },
+                )
+            }
+
             LazyColumn(
                 state = listState,
                 modifier = Modifier
@@ -148,20 +227,53 @@ fun ChatScreen(
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                if (messages.isEmpty()) {
+                if (visibleMessages.isEmpty()) {
                     item {
-                        EmptyHint(running = link.running, privilegeReady = privilegeReady)
+                        EmptyHint(
+                            tab = activeTab,
+                            running = link.running,
+                            roomKeySet = prefs.key.isNotBlank(),
+                            dmPeerSelected = dmPeerId != null,
+                        )
                     }
                 }
-                items(messages, key = { it.id }) { line ->
-                    MessageBubble(line)
+                items(visibleMessages, key = { it.id }) { line ->
+                    MessageBubble(
+                        line = line,
+                        onPeerClick = { peerId, nick ->
+                            if (peerId.isNotEmpty() && !line.isMine && line.nick != "me") {
+                                vm.openDm(peerId, nick)
+                            }
+                        },
+                    )
                 }
             }
 
+            if (!privilegeReady || link.rxOnly) {
+                TxOnboardingBanner(
+                    hasNick = prefs.nick.isNotBlank(),
+                    onOpenSettings = { showSettings = true },
+                    onActivateTx = { showAdbActivate = true },
+                )
+            }
+
+            val canSendHere = link.running && !link.sending &&
+                (activeTab != ChatTab.ROOM || prefs.key.isNotBlank()) &&
+                (activeTab != ChatTab.DM || dmPeerId != null)
+
             Composer(
                 draft = draft,
-                enabled = link.running && !link.sending,
+                enabled = canSendHere,
                 sending = link.sending,
+                placeholderText = when {
+                    link.sending -> "Transmitting over SSIDs…"
+                    !link.running -> "Tap Wi-Fi icon above to go on air"
+                    activeTab == ChatTab.ROOM && prefs.key.isBlank() -> "Enter a room passphrase above first"
+                    activeTab == ChatTab.DM && dmPeerId == null -> "Select a nearby user to start E2EE DM"
+                    activeTab == ChatTab.DM -> "E2EE message to $dmPeerNick…"
+                    activeTab == ChatTab.ROOM -> "Encrypted room message…"
+                    else -> "Message Public chat…"
+                },
                 onDraft = vm::setDraft,
                 onSend = vm::sendDraft,
                 onAttach = onPickFile,
@@ -178,7 +290,7 @@ fun ChatScreen(
             prefix = prefs.prefix,
             privilege = privilege,
             onDismiss = { showSettings = false },
-            onSaveNick = { vm.savePrefs { p -> p.copy(nick = it) } },
+            onSaveNick = { vm.applyNick(it) },
             onSaveKey = { vm.applyKey(it) },
             onStealth = { vm.applyStealth(it) },
             onRxOnly = { vm.savePrefs { p -> p.copy(rxOnly = it) } },
@@ -188,6 +300,16 @@ fun ChatScreen(
                 showAdbActivate = true
             },
             onRequestShizuku = { vm.requestShizuku() },
+        )
+    }
+
+    if (showHelp) {
+        HelpSheet(
+            onDismiss = { showHelp = false },
+            onActivateTx = {
+                showHelp = false
+                showAdbActivate = true
+            },
         )
     }
 
@@ -202,7 +324,14 @@ fun ChatScreen(
     }
 
     if (showPeers) {
-        PeersDialog(peers = peers, onDismiss = { showPeers = false })
+        PeersDialog(
+            peers = peers,
+            onDismiss = { showPeers = false },
+            onStartDm = { p ->
+                showPeers = false
+                vm.openDm(p.peerId, p.nick)
+            },
+        )
     }
 }
 
@@ -211,12 +340,13 @@ private fun TopBar(
     link: WifiChatService.LinkState,
     peerCount: Int,
     privilege: PrivilegeShell.Backend,
+    onHelp: () -> Unit,
     onSettings: () -> Unit,
     onPeers: () -> Unit,
     onToggle: () -> Unit,
     onRotate: () -> Unit,
 ) {
-    Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 text = "WiFiChat",
@@ -229,6 +359,9 @@ private fun TopBar(
             )
             IconButton(onClick = onPeers) {
                 Icon(Icons.Default.Groups, contentDescription = "Peers")
+            }
+            IconButton(onClick = onHelp) {
+                Icon(Icons.AutoMirrored.Filled.HelpOutline, contentDescription = "Help")
             }
             IconButton(onClick = onSettings) {
                 Icon(Icons.Default.Settings, contentDescription = "Settings")
@@ -243,13 +376,7 @@ private fun TopBar(
             }
         }
 
-        Text(
-            text = "SSID air-gap chat · zero association",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(6.dp))
 
         Surface(
             shape = RoundedCornerShape(14.dp),
@@ -301,7 +428,7 @@ private fun TopBar(
                                 when (privilege) {
                                     PrivilegeShell.Backend.ADB -> " · ADB shell"
                                     PrivilegeShell.Backend.SHIZUKU -> " · Shizuku"
-                                    PrivilegeShell.Backend.NONE -> " · TX locked"
+                                    PrivilegeShell.Backend.NONE -> " · RX-only"
                                 },
                             )
                         },
@@ -321,35 +448,188 @@ private fun TopBar(
 }
 
 @Composable
-private fun EmptyHint(running: Boolean, privilegeReady: Boolean) {
+private fun RoomKeyBar(
+    currentKey: String,
+    onJoinRoom: (String) -> Unit,
+) {
+    var inputKey by remember(currentKey) { mutableStateOf(currentKey) }
+    Surface(
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.65f),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(
+                Icons.Default.Lock,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.secondary,
+                modifier = Modifier.size(18.dp),
+            )
+            OutlinedTextField(
+                value = inputKey,
+                onValueChange = { inputKey = it },
+                placeholder = { Text("Enter room passphrase") },
+                singleLine = true,
+                modifier = Modifier.weight(1f),
+            )
+            FilledTonalButton(
+                onClick = { onJoinRoom(inputKey.trim()) },
+                enabled = inputKey.isNotBlank(),
+            ) {
+                Text("Join")
+            }
+        }
+    }
+}
+
+@Composable
+private fun DmHeaderBar(
+    dmPeerId: String?,
+    dmPeerNick: String?,
+    peers: List<WifiChatService.PeerRow>,
+    onSelectPeer: (WifiChatService.PeerRow) -> Unit,
+    onClearPeer: () -> Unit,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.65f),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        if (dmPeerId != null) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "E2EE DM · ${dmPeerNick.orEmpty()} (${dmPeerId.take(4)})",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = onClearPeer) {
+                    Text("Switch")
+                }
+            }
+        } else if (peers.isNotEmpty()) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    "Tap a nearby peer to start E2EE DM:",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                peers.forEach { p ->
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelectPeer(p) },
+                    ) {
+                        Row(
+                            Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                "${p.nick} (#${p.peerId.take(4)})",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                "SAS ${p.sas}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.secondary,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TxOnboardingBanner(
+    hasNick: Boolean,
+    onOpenSettings: () -> Unit,
+    onActivateTx: () -> Unit,
+) {
+    Surface(
+        color = Color(0xFF13263F),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = if (hasNick) {
+                    "RX-only · Activate Wireless Debugging to send"
+                } else {
+                    "RX-only · Set nickname & activate TX to chat"
+                },
+                style = MaterialTheme.typography.labelMedium,
+                color = Color(0xFF7DD3FC),
+                modifier = Modifier.weight(1f),
+            )
+            if (!hasNick) {
+                TextButton(onClick = onOpenSettings) {
+                    Text("Set Nick")
+                }
+            }
+            FilledTonalButton(onClick = onActivateTx) {
+                Text("Activate TX")
+            }
+        }
+    }
+}
+
+@Composable
+private fun EmptyHint(
+    tab: ChatTab,
+    running: Boolean,
+    roomKeySet: Boolean,
+    dmPeerSelected: Boolean,
+) {
     Column(
         Modifier
             .fillMaxWidth()
-            .padding(top = 48.dp),
+            .padding(top = 42.dp, start = 24.dp, end = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Icon(
             if (running) Icons.Default.Wifi else Icons.Default.WifiOff,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
-            modifier = Modifier.size(48.dp),
+            modifier = Modifier.size(44.dp),
         )
         Spacer(Modifier.height(12.dp))
         Text(
-            text = if (running) {
-                "Listening to nearby SSIDs…"
-            } else {
-                "Tap the Wi-Fi button to go on air"
+            text = when {
+                !running -> "Tap the Wi-Fi button to go on air"
+                tab == ChatTab.ROOM && !roomKeySet -> "Enter a room passphrase above to join"
+                tab == ChatTab.DM && !dmPeerSelected -> "Tap any user in Public / Room chat or Peers to start an E2EE DM"
+                else -> "Listening to nearby Wi-Fi SSIDs…"
             },
             style = MaterialTheme.typography.bodyLarge,
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            text = if (privilegeReady) {
-                "SoftAP TX + privileged scan ready"
-            } else {
-                "Settings → Activate SoftAP TX (wireless debugging pair) for full TX; otherwise RX-only"
-            },
+            text = "Tap any sender's nickname to start a private E2EE DM.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -357,7 +637,10 @@ private fun EmptyHint(running: Boolean, privilegeReady: Boolean) {
 }
 
 @Composable
-private fun MessageBubble(line: WifiChatService.ChatLine) {
+private fun MessageBubble(
+    line: WifiChatService.ChatLine,
+    onPeerClick: (peerId: String, nick: String) -> Unit,
+) {
     val time = remember(line.timeMs) {
         SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(line.timeMs))
     }
@@ -371,7 +654,7 @@ private fun MessageBubble(line: WifiChatService.ChatLine) {
             )
         }
         WifiChatService.ChatLine.Kind.CHAT, WifiChatService.ChatLine.Kind.FILE -> {
-            val mine = line.nick == "me"
+            val mine = line.isMine || line.nick == "me"
             val accent = when {
                 line.direct -> MaterialTheme.colorScheme.primary
                 line.micro -> MaterialTheme.colorScheme.secondary
@@ -394,7 +677,12 @@ private fun MessageBubble(line: WifiChatService.ChatLine) {
                         }
                     },
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (mine) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary,
+                    modifier = if (!mine && line.peerId.isNotEmpty()) {
+                        Modifier.clickable { onPeerClick(line.peerId, line.nick) }
+                    } else {
+                        Modifier
+                    },
                 )
                 Surface(
                     shape = RoundedCornerShape(
@@ -404,6 +692,11 @@ private fun MessageBubble(line: WifiChatService.ChatLine) {
                         bottomEnd = if (mine) 4.dp else 14.dp,
                     ),
                     color = if (mine) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else accent.copy(alpha = 0.35f),
+                    modifier = if (!mine && line.peerId.isNotEmpty()) {
+                        Modifier.clickable { onPeerClick(line.peerId, line.nick) }
+                    } else {
+                        Modifier
+                    },
                 ) {
                     Text(
                         text = if (line.kind == WifiChatService.ChatLine.Kind.FILE) {
@@ -425,6 +718,7 @@ private fun Composer(
     draft: String,
     enabled: Boolean,
     sending: Boolean,
+    placeholderText: String,
     onDraft: (String) -> Unit,
     onSend: () -> Unit,
     onAttach: () -> Unit,
@@ -447,14 +741,9 @@ private fun Composer(
                 onValueChange = onDraft,
                 modifier = Modifier.weight(1f),
                 enabled = enabled,
-                placeholder = {
-                    Text(
-                        if (sending) "Transmitting over SSIDs…"
-                        else "Message  ·  @peer for E2EE",
-                    )
-                },
+                placeholder = { Text(placeholderText, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                keyboardActions = KeyboardActions(onSend = { if (enabled) onSend() }),
+                keyboardActions = KeyboardActions(onSend = { if (enabled && draft.isNotBlank()) onSend() }),
                 maxLines = 4,
             )
             Spacer(Modifier.width(6.dp))
@@ -462,6 +751,69 @@ private fun Composer(
                 Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
             }
         }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun HelpSheet(
+    onDismiss: () -> Unit,
+    onActivateTx: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("How to use WiFiChat", style = MaterialTheme.typography.headlineMedium)
+
+            HelpSection(
+                title = "1. Zero-Internet Air Chat",
+                body = "WiFiChat transmits encrypted text and files using 32-byte Wi-Fi hotspot names (SSIDs). No internet, SIM card, or router connection is required.",
+            )
+            HelpSection(
+                title = "2. Public, Room & DM Tabs",
+                body = "• Public: Open broadcast channel visible to all nearby WiFiChat users.\n" +
+                    "• Room: Enter a shared passphrase to chat in an Argon2id-isolated private room.\n" +
+                    "• DM: Tap any user's nickname in Public/Room chat (or in Peers) for X25519 end-to-end encrypted direct chat.",
+            )
+            HelpSection(
+                title = "3. Nickname & Sending (SoftAP TX)",
+                body = "Passive listening (RX-only) works out of the box. To send messages:\n" +
+                    "1) Set your nickname in Settings (otherwise an anonymous anon-xxxx alias is used).\n" +
+                    "2) Enable Developer options → Wireless debugging on your phone, then tap Activate SoftAP TX and pair once.",
+            )
+            HelpSection(
+                title = "4. Ephemeral Privacy",
+                body = "Keys exist in RAM only. Tap the refresh icon in the header anytime to rotate your X25519 identity, PeerID, and hotspot MAC.",
+            )
+
+            FilledTonalButton(
+                onClick = onActivateTx,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Activate SoftAP TX (wireless debugging)")
+            }
+            Button(
+                onClick = onDismiss,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Got it")
+            }
+            Spacer(Modifier.height(16.dp))
+        }
+    }
+}
+
+@Composable
+private fun HelpSection(title: String, body: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+        Text(body, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -492,6 +844,7 @@ private fun SettingsSheet(
         Column(
             Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -499,7 +852,8 @@ private fun SettingsSheet(
             OutlinedTextField(
                 value = nick,
                 onValueChange = { nick = it },
-                label = { Text("Alias (optional)") },
+                label = { Text("Nickname (optional)") },
+                placeholder = { Text("Leave blank for anon-xxxx") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
             )
@@ -567,7 +921,11 @@ private fun SettingsSheet(
 }
 
 @Composable
-private fun PeersDialog(peers: List<WifiChatService.PeerRow>, onDismiss: () -> Unit) {
+private fun PeersDialog(
+    peers: List<WifiChatService.PeerRow>,
+    onDismiss: () -> Unit,
+    onStartDm: (WifiChatService.PeerRow) -> Unit,
+) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Nearby peers") },
@@ -577,10 +935,19 @@ private fun PeersDialog(peers: List<WifiChatService.PeerRow>, onDismiss: () -> U
             } else {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     peers.forEach { p ->
-                        Text(
-                            "${p.nick}  id=${p.peerId}  SAS=${p.sas}  RSSI=${p.signal}",
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onStartDm(p) },
+                        ) {
+                            Text(
+                                "${p.nick}  #${p.peerId.take(4)}  SAS=${p.sas}  RSSI=${p.signal}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.padding(10.dp),
+                            )
+                        }
                     }
                 }
             }

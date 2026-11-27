@@ -232,6 +232,13 @@ func (s *Session) SetKey(key string) {
 	s.eng.SetPassphrase(key)
 }
 
+// SetNick updates the display nickname at runtime; returns IdentityJSON.
+func (s *Session) SetNick(nick string) string {
+	s.cfg.Nick = nick
+	_ = s.eng.SetNick(nick)
+	return s.IdentityJSON()
+}
+
 // SetStealth toggles idle decoy / quiet Hello mode.
 func (s *Session) SetStealth(on bool) {
 	s.cfg.Stealth = on

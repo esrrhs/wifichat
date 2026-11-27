@@ -18,6 +18,8 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import rikka.shizuku.Shizuku
 
+enum class ChatTab { PUBLIC, ROOM, DM }
+
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = UserPrefs(app)
 
@@ -41,6 +43,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _draft = MutableStateFlow("")
     val draft: StateFlow<String> = _draft.asStateFlow()
+
+    private val _activeTab = MutableStateFlow(ChatTab.PUBLIC)
+    val activeTab: StateFlow<ChatTab> = _activeTab.asStateFlow()
+
+    private val _dmPeerId = MutableStateFlow<String?>(null)
+    val dmPeerId: StateFlow<String?> = _dmPeerId.asStateFlow()
+
+    private val _dmPeerNick = MutableStateFlow<String?>(null)
+    val dmPeerNick: StateFlow<String?> = _dmPeerNick.asStateFlow()
 
     private var collectJobs: List<Job> = emptyList()
 
@@ -82,12 +93,43 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         AdbActivator.status(getApplication())
     }
 
+    fun ensureStarted() {
+        if (WifiChatService.instance == null) {
+            startLink()
+        }
+    }
+
+    fun selectTab(tab: ChatTab) {
+        _activeTab.value = tab
+        val svc = WifiChatService.instance ?: return
+        when (tab) {
+            ChatTab.PUBLIC -> svc.setRoomKey("")
+            ChatTab.ROOM -> {
+                val k = chatPrefs.value.key
+                if (k.isNotBlank()) svc.setRoomKey(k)
+            }
+            ChatTab.DM -> Unit
+        }
+    }
+
+    fun openDm(peerId: String, nick: String) {
+        _dmPeerId.value = peerId
+        _dmPeerNick.value = nick
+        _activeTab.value = ChatTab.DM
+    }
+
+    fun clearDmPeer() {
+        _dmPeerId.value = null
+        _dmPeerNick.value = null
+    }
+
     fun startLink() {
         val p = chatPrefs.value
+        val initialKey = if (_activeTab.value == ChatTab.ROOM) p.key else ""
         WifiChatService.start(
             getApplication(),
             nick = p.nick,
-            key = p.key,
+            key = initialKey,
             stealth = p.stealth,
             rxOnly = p.rxOnly,
             prefix = p.prefix,
@@ -114,21 +156,35 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun sendDraft() {
         val text = _draft.value
-        WifiChatService.instance?.sendText(text)
+        val target = if (_activeTab.value == ChatTab.DM) _dmPeerId.value else null
+        if (_activeTab.value == ChatTab.DM && target.isNullOrBlank()) return
+        WifiChatService.instance?.sendText(text, directPeer = target)
         _draft.value = ""
     }
 
     fun sendFile(path: String, peer: String? = null) {
-        WifiChatService.instance?.sendFile(path, peer)
+        val target = peer ?: if (_activeTab.value == ChatTab.DM) _dmPeerId.value else null
+        WifiChatService.instance?.sendFile(path, target)
     }
 
     fun rotate() {
         WifiChatService.instance?.rotateIdentity()
     }
 
+    fun applyNick(nick: String) {
+        savePrefs { it.copy(nick = nick) }
+        WifiChatService.instance?.setNick(nick)
+    }
+
     fun applyKey(key: String) {
         savePrefs { it.copy(key = key) }
-        WifiChatService.instance?.setRoomKey(key)
+        if (_activeTab.value == ChatTab.ROOM || key.isNotBlank()) {
+            WifiChatService.instance?.setRoomKey(key)
+        }
+    }
+
+    fun joinRoom(key: String) {
+        applyKey(key)
     }
 
     fun applyStealth(on: Boolean) {

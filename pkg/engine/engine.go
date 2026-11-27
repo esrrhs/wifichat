@@ -243,6 +243,17 @@ func (e *Engine) SetPassphrase(pass string) {
 	}
 }
 
+// SetNick updates the local display nickname and re-announces Hello if transmitting.
+func (e *Engine) SetNick(nick string) crypto.IdentityPublic {
+	e.id.SetNick(nick)
+	pub := e.id.Public()
+	e.emitEvent("nickname set to %s", pub.Nick)
+	if !e.opts.RXOnly && !e.opts.Stealth {
+		_ = e.QueueHello()
+	}
+	return pub
+}
+
 func (e *Engine) SetStealth(stealth bool) {
 	e.mu.Lock()
 	e.opts.Stealth = stealth
